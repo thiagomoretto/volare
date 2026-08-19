@@ -15,7 +15,7 @@ CVRPLIB reader and a benchmark runner are included.
 
 ```toml
 [dependencies]
-volare = { git = "https://github.com/thiagomoretto/volare" }
+volare = "0.1"
 ```
 
 Requires Rust 1.85 or later. To build from source:
