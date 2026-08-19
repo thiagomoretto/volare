@@ -1,0 +1,5 @@
+#!/bin/sh
+# Same gates as CI, minus the tests (CI runs those).
+set -e
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
