@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::eval::{Penalties, Solution, eval_route, eval_solution};
+use crate::eval::{Penalties, Routes, eval_route, eval_routes};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -93,6 +93,17 @@ pub enum Improve {
     Gls { iters: usize },
 }
 
+/// What a solve leaves behind: the routes and their true total cost.
+///
+/// `cost` is the true cost — never the penalized number a GLS descent was
+/// reading — and the solver only returns feasible routes, so it is a plain
+/// `Cost`, not an `Option`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Solution {
+    pub routes: Routes,
+    pub cost: Cost,
+}
+
 /// The model is borrowed shared: every piece of mutable search state, GLS
 /// penalties included, is owned by the call. One model can therefore back any
 /// number of solves running at once.
@@ -114,7 +125,8 @@ pub fn solve_with(
         Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
         Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
     }
-    sol
+    let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
+    Solution { routes: sol, cost }
 }
 
 /// Vehicles worth trying an insertion on: every route in use, plus one empty
@@ -123,7 +135,7 @@ pub fn solve_with(
 /// ponytail: "one empty" is right for a homogeneous fleet. With a real
 /// heterogeneous fleet this should be one empty vehicle per cost class,
 /// otherwise the cheaper vehicle types are never opened.
-fn candidate_vehicles(sol: &Solution) -> Vec<usize> {
+fn candidate_vehicles(sol: &Routes) -> Vec<usize> {
     let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
         v.push(empty);
@@ -140,14 +152,14 @@ fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>
 
 /// Cheapest insertion: repeatedly place the node whose best feasible insertion
 /// costs least, anywhere in the fleet.
-pub fn first_solution(m: &Model) -> Solution {
+pub fn first_solution(m: &Model) -> Routes {
     first_solution_with(m, |_| {})
 }
 
 /// `first_solution` reporting a single `FirstSolution` event at the end.
-pub fn first_solution_with(m: &Model, mut log: impl FnMut(SearchEvent)) -> Solution {
+pub fn first_solution_with(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
-    let mut sol: Solution = vec![Vec::new(); nv];
+    let mut sol: Routes = vec![Vec::new(); nv];
     let mut cost = vec![0 as Cost; nv];
     let mut unrouted: Vec<NodeId> = (0..m.node_count() as u32)
         .map(NodeId)
@@ -191,19 +203,19 @@ pub fn first_solution_with(m: &Model, mut log: impl FnMut(SearchEvent)) -> Solut
 /// bits: a node is only re-examined after a move touched its route. 2-opt*
 /// stays out of the per-node cascade — it fires once the fine operators reach
 /// a fixpoint, as a partition-level kick, then the sweep resumes.
-pub fn local_search(m: &Model, sol: &mut Solution) {
+pub fn local_search(m: &Model, sol: &mut Routes) {
     local_search_with(m, sol, |_| {})
 }
 
 /// `local_search` reporting an `Improvement` per accepted move and a final
 /// `Done`.
-pub fn local_search_with(m: &Model, sol: &mut Solution, log: impl FnMut(SearchEvent)) {
+pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEvent)) {
     descend(m, &Penalties::NONE, sol, log)
 }
 
 /// The descent itself, on whatever cost `p` defines. Public callers get true
 /// cost; only guided local search passes a non-empty table.
-fn descend(m: &Model, p: &Penalties, sol: &mut Solution, mut log: impl FnMut(SearchEvent)) {
+fn descend(m: &Model, p: &Penalties, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) {
     let mut cost: Vec<Cost> = (0..sol.len())
         .map(|v| eval_route(m, p, &sol[v], VehicleId(v as u32)).expect("infeasible start solution"))
         .collect();
@@ -296,7 +308,7 @@ const LAMBDA_DENOMINATOR: Cost = 10;
 /// ponytail: every iteration restarts a full local search from scratch. Waking
 /// only the nodes touched by the arcs just penalized is the 3-5x speedup —
 /// add it when the iteration count needs to go past a few hundred.
-pub fn guided_local_search(m: &Model, sol: &mut Solution, iters: usize) {
+pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
     guided_local_search_with(m, sol, iters, |_| {})
 }
 
@@ -309,14 +321,14 @@ pub fn guided_local_search(m: &Model, sol: &mut Solution, iters: usize) {
 /// you nothing true.
 pub fn guided_local_search_with(
     m: &Model,
-    sol: &mut Solution,
+    sol: &mut Routes,
     iters: usize,
     mut log: impl FnMut(SearchEvent),
 ) {
     local_search(m, sol);
 
     let mut best = sol.clone();
-    let mut best_cost = eval_solution(m, sol).expect("infeasible local optimum");
+    let mut best_cost = eval_routes(m, sol).expect("infeasible local optimum");
     log(SearchEvent::GuidedBest {
         iter: 0,
         cost: best_cost,
@@ -334,8 +346,8 @@ pub fn guided_local_search_with(
         descend(m, &penalties, sol, |_| {});
 
         // The descent just optimized penalized cost, which is not the cost we
-        // rank solutions by. `eval_solution` is always the true one.
-        let cost = eval_solution(m, sol).expect("infeasible after descent");
+        // rank solutions by. `eval_routes` is always the true one.
+        let cost = eval_routes(m, sol).expect("infeasible after descent");
         if cost < best_cost {
             best_cost = cost;
             best.clone_from(sol);
@@ -353,7 +365,7 @@ pub fn guided_local_search_with(
 ///
 /// The comparison is cross-multiplied rather than divided: this repo has no
 /// floats, and ties must break the same way on every run.
-fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Solution) {
+fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
     let mut worst: Vec<(NodeId, NodeId)> = Vec::new();
     // (arc cost, 1 + times penalized) of the best candidate so far.
     let mut top: Option<(Cost, Cost)> = None;
@@ -406,7 +418,7 @@ fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Solution) {
 fn try_relocate(
     m: &Model,
     p: &Penalties,
-    sol: &mut Solution,
+    sol: &mut Routes,
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
@@ -455,7 +467,7 @@ fn try_relocate(
 fn try_swap(
     m: &Model,
     p: &Penalties,
-    sol: &mut Solution,
+    sol: &mut Routes,
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
@@ -492,7 +504,7 @@ fn try_swap(
 }
 
 /// Intra-route 2-opt: reverse one segment, keep it if it is cheaper.
-fn try_two_opt(m: &Model, p: &Penalties, sol: &mut Solution, cost: &mut [Cost], r: usize) -> bool {
+fn try_two_opt(m: &Model, p: &Penalties, sol: &mut Routes, cost: &mut [Cost], r: usize) -> bool {
     let len = sol[r].len();
     for i in 0..len {
         for j in i + 1..len {
@@ -528,7 +540,7 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 fn try_two_opt_star(
     m: &Model,
     p: &Penalties,
-    sol: &mut Solution,
+    sol: &mut Routes,
     cost: &mut [Cost],
     r: usize,
 ) -> Option<usize> {
@@ -596,7 +608,7 @@ fn try_two_opt_star(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::eval_solution;
+    use crate::eval::eval_routes;
     use crate::model::ModelBuilder;
 
     /// Depot at 0, customers 1..=5 on a line; arc cost is line distance.
@@ -630,7 +642,7 @@ mod tests {
         let m = b.build();
 
         let mut sol = vec![vec![NodeId(1), NodeId(3)], vec![NodeId(2), NodeId(4)]];
-        assert_eq!(eval_solution(&m, &sol), Some(140));
+        assert_eq!(eval_routes(&m, &sol), Some(140));
 
         let mut ops = Vec::new();
         local_search_with(&m, &mut sol, |e| {
@@ -642,7 +654,7 @@ mod tests {
             ops.contains(&Operator::Swap),
             "expected a swap, got {ops:?}"
         );
-        assert_eq!(eval_solution(&m, &sol), Some(120));
+        assert_eq!(eval_routes(&m, &sol), Some(120));
     }
 
     /// Crossing routes on tight capacity: no single-customer move helps, only
@@ -713,9 +725,9 @@ mod tests {
         }
 
         assert!(done <= first, "local search never worsens the solution");
-        assert_eq!(Some(done), eval_solution(&m, &sol));
+        assert_eq!(Some(done), eval_routes(&m, &sol.routes));
         // The silent entry point solves to the same cost.
         let silent = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
-        assert_eq!(eval_solution(&m, &silent), Some(done));
+        assert_eq!(silent.cost, done);
     }
 }

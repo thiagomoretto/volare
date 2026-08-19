@@ -6,7 +6,7 @@ use crate::types::{Cost, NodeId, VehicleId};
 
 /// Routes indexed by vehicle. Each holds the visits *between* the vehicle's
 /// start and end nodes, terminals excluded.
-pub type Solution = Vec<Vec<NodeId>>;
+pub type Routes = Vec<Vec<NodeId>>;
 
 /// Arc penalties for guided local search, and the weight one penalty carries.
 ///
@@ -143,14 +143,14 @@ pub fn eval_route(m: &Model, p: &Penalties, route: &[NodeId], v: VehicleId) -> O
 ///
 /// Always true cost: nothing ranks solutions by a penalized number, so this
 /// takes no `Penalties` at all.
-pub fn eval_solution(m: &Model, sol: &Solution) -> Option<Cost> {
+pub fn eval_routes(m: &Model, sol: &Routes) -> Option<Cost> {
     (0..sol.len()).try_fold(0, |acc, v| {
         Some(acc + eval_route(m, &Penalties::NONE, &sol[v], VehicleId(v as u32))?)
     })
 }
 
 /// Every non-terminal node visited exactly once.
-pub fn visits_all_nodes(m: &Model, sol: &Solution) -> bool {
+pub fn visits_all_nodes(m: &Model, sol: &Routes) -> bool {
     let mut seen = vec![0u32; m.node_count()];
     for route in sol {
         for &n in route {

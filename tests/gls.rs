@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use volare::cvrplib::{Instance, cvrp_model};
-use volare::eval::{eval_solution, visits_all_nodes};
+use volare::eval::{eval_routes, visits_all_nodes};
 use volare::solver::{Construct, Improve, first_solution, local_search, solve};
 
 #[test]
@@ -21,7 +21,7 @@ fn gls_improves_on_the_hill_climb() {
 
     let mut hill = first_solution(&m);
     local_search(&m, &mut hill);
-    let hill_cost = eval_solution(&m, &hill).expect("infeasible hill climb");
+    let hill_cost = eval_routes(&m, &hill).expect("infeasible hill climb");
 
     // 1000, not 20: on this instance 20 rounds improve nothing, and that count
     // would pass this test while doing no work at all — `best` starts as the
@@ -31,10 +31,10 @@ fn gls_improves_on_the_hill_climb() {
         Construct::CheapestInsertion,
         Improve::Gls { iters: 1000 },
     );
-    let gls_cost = eval_solution(&m, &sol).expect("infeasible GLS solution");
+    let gls_cost = sol.cost;
 
     assert!(
-        visits_all_nodes(&m, &sol),
+        visits_all_nodes(&m, &sol.routes),
         "GLS dropped or duplicated a node"
     );
     assert!(
