@@ -29,7 +29,7 @@ cargo build --release
 ## Usage
 
 ```rust
-use volare::{Construct, Improve, ModelBuilder, NodeId, eval_solution, solve};
+use volare::{Construct, Improve, ModelBuilder, NodeId, solve};
 
 let coords: [(f64, f64); 5] = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (30.0, 0.0), (40.0, 0.0)];
 
@@ -49,9 +49,9 @@ b.vehicle(NodeId(0), NodeId(0), cost);
 b.dimension("demand", |_from, to| if to == NodeId(0) { 0 } else { 1 }, vec![3, 3]);
 
 let model = b.build();
-let routes = solve(&model, Construct::CheapestInsertion, Improve::Gls { iters: 200 });
+let sol = solve(&model, Construct::CheapestInsertion, Improve::Gls { iters: 200 });
 
-println!("{routes:?} costs {:?}", eval_solution(&model, &routes));
+println!("{:?} costs {}", sol.routes, sol.cost);
 ```
 
 Arc costs are closures, so distances can come from coordinates, a precomputed

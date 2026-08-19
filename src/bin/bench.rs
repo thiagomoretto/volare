@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use volare::cvrplib::{Instance, cvrp_model, parse_sol};
-use volare::eval::{eval_solution, visits_all_nodes};
+use volare::eval::{eval_routes, visits_all_nodes};
 use volare::solver::{
     SearchEvent, first_solution_with, guided_local_search_with, local_search_with, search_log,
 };
@@ -82,7 +82,7 @@ fn main() {
             Box::new(|_| {})
         };
         let mut sol = first_solution_with(&model, &mut log);
-        let ctor = eval_solution(&model, &sol).expect("infeasible construction");
+        let ctor = eval_routes(&model, &sol).expect("infeasible construction");
         match gls {
             Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
             None => local_search_with(&model, &mut sol, &mut log),
@@ -95,7 +95,7 @@ fn main() {
             "{}: not all nodes routed",
             inst.name
         );
-        let cost = eval_solution(&model, &sol).expect("solver returned an infeasible solution");
+        let cost = eval_routes(&model, &sol).expect("solver returned an infeasible solution");
         let gap = 100.0 * (cost - reference) as f64 / reference as f64;
         gap_sum += gap;
 
