@@ -119,8 +119,7 @@ pub fn solve_with(
     improve: Improve,
     mut log: impl FnMut(SearchEvent),
 ) -> Solution {
-    let Construct::CheapestInsertion = construct;
-    let mut sol = first_solution_with(m, &mut log);
+    let mut sol = first_solution_with(m, construct, &mut log);
     match improve {
         Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
         Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
@@ -150,14 +149,17 @@ fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>
     out.extend_from_slice(&route[pos..]);
 }
 
-/// Cheapest insertion: repeatedly place the node whose best feasible insertion
-/// costs least, anywhere in the fleet.
-pub fn first_solution(m: &Model) -> Routes {
-    first_solution_with(m, |_| {})
+pub fn first_solution_with(
+    m: &Model,
+    construct: Construct,
+    log: impl FnMut(SearchEvent),
+) -> Routes {
+    match construct {
+        Construct::CheapestInsertion => cheapest_insertion(m, log),
+    }
 }
 
-/// `first_solution` reporting a single `FirstSolution` event at the end.
-pub fn first_solution_with(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes {
+pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
     let mut sol: Routes = vec![Vec::new(); nv];
     let mut cost = vec![0 as Cost; nv];

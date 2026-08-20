@@ -10,7 +10,7 @@ use std::path::Path;
 
 use volare::cvrplib::{Instance, cvrp_model};
 use volare::eval::{eval_routes, visits_all_nodes};
-use volare::solver::{Construct, Improve, first_solution, local_search, solve};
+use volare::solver::{Construct, Improve, first_solution_with, local_search, solve};
 
 #[test]
 fn gls_improves_on_the_hill_climb() {
@@ -19,7 +19,7 @@ fn gls_improves_on_the_hill_climb() {
     let n = inst.coords.len();
     let m = cvrp_model(&inst, n - 1);
 
-    let mut hill = first_solution(&m);
+    let mut hill = first_solution_with(&m, Construct::CheapestInsertion, |_| {});
     local_search(&m, &mut hill);
     let hill_cost = eval_routes(&m, &hill).expect("infeasible hill climb");
 
