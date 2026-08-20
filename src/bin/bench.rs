@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use volare::Construct;
 use volare::cvrplib::{Instance, cvrp_model, parse_sol};
 use volare::eval::{eval_routes, visits_all_nodes};
 use volare::solver::{
@@ -81,7 +82,8 @@ fn main() {
         } else {
             Box::new(|_| {})
         };
-        let mut sol = first_solution_with(&model, &mut log);
+        let construct = Construct::CheapestInsertion;
+        let mut sol = first_solution_with(&model, construct, &mut log);
         let ctor = eval_routes(&model, &sol).expect("infeasible construction");
         match gls {
             Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
