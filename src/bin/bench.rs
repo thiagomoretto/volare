@@ -9,8 +9,9 @@
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!
 //! A `--scenario` picks a model variant instead of the plain CVRP: a new
-//! constraint is a `scenario_model` arm plus a check, not a binary each, and
-//! the report is the constrained cost against the same instance solved open.
+//! constraint is a `*_model` transform plus a `check_*` arm, not a binary
+//! each, and the report is the constrained cost against the same instance
+//! solved open.
 
 use std::collections::HashMap;
 use std::fs;
@@ -62,7 +63,7 @@ fn main() {
 
     match scenario {
         None => bench_reference(root, &instances, write_baseline, log_search, gls),
-        Some(_) => bench_scenario(&instances, log_search, gls),
+        Some(name) => bench_scenario(name, &instances, log_search, gls),
     }
 }
 
@@ -157,10 +158,10 @@ fn bench_reference(
 }
 
 /// A scenario report: constrained cost against the same instance solved open.
-fn bench_scenario(instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
+fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
     println!(
         "{:<14} {:>5} {:>5} {:>9} {:>9} {:>7} {:>7}",
-        "instance", "n", "pairs", "open", "scenario", "delta%", "ms"
+        "instance", "n", "note", "open", "scenario", "delta%", "ms"
     );
 
     for vrp in instances {
@@ -170,21 +171,27 @@ fn bench_scenario(instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
 
         let started = Instant::now();
         let open = solve(&cvrp_model(&inst, fleet), gls, &mut log).cost;
-        let mut pairs = 0;
-        let model = cvrp_model_with(&inst, fleet, |b| scenario_model(&inst, b, &mut pairs));
+        let mut note = String::new();
+        let model = cvrp_model_with(&inst, fleet, |b| match scenario {
+            "forbid" => forbid_model(&inst, b, &mut note),
+            _ => unreachable!("gated in main"),
+        });
         let sol = solve(&model, gls, &mut log);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
 
         // The whole point of the run: the constraint held.
         assert!(visits_all_nodes(&model, &sol.routes));
-        check_scenario(&model, &sol, &inst.name);
+        match scenario {
+            "forbid" => check_forbid(&model, &sol, &inst.name),
+            _ => unreachable!("gated in main"),
+        }
 
         let delta = 100.0 * (sol.cost - open) as f64 / open as f64;
         println!(
             "{:<14} {:>5} {:>5} {:>9} {:>9} {:>7.2} {:>7.0}",
             inst.name,
             inst.coords.len(),
-            pairs,
+            note,
             open,
             sol.cost,
             delta,
@@ -193,23 +200,25 @@ fn bench_scenario(instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
     }
 }
 
-/// The scenario as a builder transform. Deterministic (no RNG in this repo):
-/// customers with `id % 7 == 0` (~14%) are forbidden on half the fleet. With
-/// a free fleet a forbidden customer still has ~n/2 vehicles to choose from,
-/// so the delta measures the pure routing cost of the constraint.
-fn scenario_model(inst: &Instance, b: &mut ModelBuilder, pairs: &mut usize) {
+/// Customers with `id % 7 == 0` (~14%) are forbidden on half the fleet —
+/// deterministic, no RNG in this repo. With a free fleet a forbidden customer
+/// still has ~n/2 vehicles to choose from, so the delta measures the pure
+/// routing cost of the constraint.
+fn forbid_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     let n = inst.coords.len() as u32;
+    let mut pairs = 0;
     for c in 0..n {
         for v in 0..free_fleet(inst) as u32 {
             if c % 7 == 0 && (v + c) % 2 == 0 && NodeId(c) != inst.depot {
                 b.forbid(VehicleId(v), NodeId(c));
-                *pairs += 1;
+                pairs += 1;
             }
         }
     }
+    *note = pairs.to_string();
 }
 
-fn check_scenario(model: &Model, sol: &Solution, name: &str) {
+fn check_forbid(model: &Model, sol: &Solution, name: &str) {
     for (v, route) in sol.routes.iter().enumerate() {
         let veh = model.vehicle(VehicleId(v as u32));
         assert!(
