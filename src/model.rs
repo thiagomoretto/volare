@@ -1,7 +1,6 @@
 use crate::types::{NodeId, VehicleId};
 
-/// An arc-indexed integer function: cost, distance, load, duration.
-/// Shared by cost classes and dimension transits. One table, two uses.
+/// One table, two uses: cost classes and dimension transits.
 ///
 /// `Send + Sync` is what keeps `Model` movable between threads. Without it
 /// a caller cannot hand a model to a worker pool or an async task, which is
@@ -20,6 +19,18 @@ pub struct Vehicle {
     pub start: NodeId,
     pub end: NodeId,
     pub cost_class: usize,
+    /// Empty until the first `forbid`, so the common case costs one
+    /// `is_empty` in `eval_route`.
+    pub forbidden: Box<[u64]>,
+}
+
+impl Vehicle {
+    #[inline]
+    pub fn forbids(&self, n: NodeId) -> bool {
+        self.forbidden
+            .get(n.index() / 64)
+            .is_some_and(|w| w >> (n.index() % 64) & 1 == 1)
+    }
 }
 
 pub struct Dimension {
@@ -71,7 +82,6 @@ impl Model {
         (self.evaluators[idx])(from, to)
     }
 
-    /// True for nodes that are a vehicle terminal, i.e. not customers to route.
     pub fn is_terminal(&self, n: NodeId) -> bool {
         self.vehicles.iter().any(|v| v.start == n || v.end == n)
     }
@@ -93,8 +103,8 @@ impl ModelBuilder {
         }
     }
 
-    /// Register an arc cost function; the returned index is the cost class.
-    /// Vehicles sharing a cost model share one closure.
+    /// The returned index is the cost class; vehicles sharing a cost model
+    /// share one closure.
     pub fn cost_class(
         &mut self,
         f: impl Fn(NodeId, NodeId) -> i64 + Send + Sync + 'static,
@@ -109,11 +119,12 @@ impl ModelBuilder {
             start,
             end,
             cost_class,
+            forbidden: Box::default(),
         });
         VehicleId(self.vehicles.len() as u32 - 1)
     }
 
-    /// Add a dimension. `capacity` is per vehicle, so add vehicles first.
+    /// `capacity` is per vehicle, so add vehicles first.
     pub fn dimension(
         &mut self,
         name: &str,
@@ -129,6 +140,18 @@ impl ModelBuilder {
             lower_bound: vec![0; self.node_count],
         });
         self
+    }
+
+    /// Construction fails loudly if a node ends up forbidden on every
+    /// vehicle.
+    pub fn forbid(&mut self, v: VehicleId, n: NodeId) {
+        assert!(n.index() < self.node_count, "forbidden node out of range");
+        let words = self.node_count.div_ceil(64);
+        let veh = &mut self.vehicles[v.index()];
+        if veh.forbidden.is_empty() {
+            veh.forbidden = vec![0; words].into_boxed_slice();
+        }
+        veh.forbidden[n.index() / 64] |= 1 << (n.index() % 64);
     }
 
     pub fn build(self) -> Model {

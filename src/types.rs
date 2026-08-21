@@ -1,8 +1,6 @@
-/// Node index into the model's node space. Indexes, not pointers.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeId(pub u32);
 
-/// Vehicle index into the model's fleet.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct VehicleId(pub u32);
 
