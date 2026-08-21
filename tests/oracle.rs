@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use volare::cvrplib::{Instance, cvrp_model, parse_sol};
-use volare::eval::{Penalties, eval_route, visits_all_nodes};
+use volare::eval::{eval_route, visits_all_nodes};
 use volare::types::VehicleId;
 
 #[test]
@@ -38,7 +38,7 @@ fn bks_routes_reproduce_published_cost() {
 
         let mut total = 0;
         for (v, route) in sol.routes.iter().enumerate() {
-            total += eval_route(&model, &Penalties::NONE, route, VehicleId(v as u32))
+            total += eval_route(&model, route, VehicleId(v as u32))
                 .unwrap_or_else(|| panic!("{}: BKS route {v} violates capacity", inst.name));
         }
         assert_eq!(total, sol.cost, "{}: cost mismatch", inst.name);
@@ -54,13 +54,10 @@ fn empty_route_is_free() {
          NODE_COORD_SECTION\n1 0 0\n2 3 4\nDEMAND_SECTION\n1 0\n2 5\nDEPOT_SECTION\n1\n-1\nEOF\n",
     );
     let model = cvrp_model(&inst, 2);
-    assert_eq!(
-        eval_route(&model, &Penalties::NONE, &[], VehicleId(0)),
-        Some(0)
-    );
+    assert_eq!(eval_route(&model, &[], VehicleId(0)), Some(0));
     // 3-4-5 triangle, out and back.
     assert_eq!(
-        eval_route(&model, &Penalties::NONE, &[volare::NodeId(1)], VehicleId(0)),
+        eval_route(&model, &[volare::NodeId(1)], VehicleId(0)),
         Some(10)
     );
 }
@@ -74,10 +71,6 @@ fn capacity_is_enforced() {
     );
     let model = cvrp_model(&inst, 2);
     let (a, b) = (volare::NodeId(1), volare::NodeId(2));
-    assert!(eval_route(&model, &Penalties::NONE, &[a], VehicleId(0)).is_some());
-    assert_eq!(
-        eval_route(&model, &Penalties::NONE, &[a, b], VehicleId(0)),
-        None,
-        "12 > 10"
-    );
+    assert!(eval_route(&model, &[a], VehicleId(0)).is_some());
+    assert_eq!(eval_route(&model, &[a, b], VehicleId(0)), None, "12 > 10");
 }
