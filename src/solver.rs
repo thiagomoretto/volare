@@ -132,9 +132,9 @@ pub fn solve_with(
 /// Vehicles worth trying an insertion on: every route in use, plus one empty
 /// one so the fleet can still grow.
 ///
-/// ponytail: "one empty" is right for a homogeneous fleet. With a real
-/// heterogeneous fleet this should be one empty vehicle per cost class,
-/// otherwise the cheaper vehicle types are never opened.
+/// One empty is enough only while empty vehicles are interchangeable. Once
+/// they are not — per-vehicle `forbid` sets make them differ — the caller
+/// retries with all of them (see `cheapest_insertion`).
 fn candidate_vehicles(sol: &Routes) -> Vec<usize> {
     let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
@@ -171,26 +171,58 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
     let mut scratch = Vec::new();
 
     while !unrouted.is_empty() {
-        let candidates = candidate_vehicles(&sol);
         // (delta, unrouted index, vehicle, position)
-        let mut best: Option<(Cost, usize, usize, usize)> = None;
-
-        for (ui, &node) in unrouted.iter().enumerate() {
-            for &v in &candidates {
-                for pos in 0..=sol[v].len() {
-                    with_insert(&sol[v], pos, node, &mut scratch);
-                    let Some(c) = eval_route(m, &scratch, VehicleId(v as u32)) else {
-                        continue;
-                    };
-                    let delta = c - cost[v];
-                    if best.is_none_or(|(bd, ..)| delta < bd) {
-                        best = Some((delta, ui, v, pos));
+        let scan = |candidates: &[usize],
+                    sol: &Routes,
+                    cost: &[Cost],
+                    unrouted: &[NodeId],
+                    scratch: &mut Vec<NodeId>|
+         -> Option<(Cost, usize, usize, usize)> {
+            let mut best: Option<(Cost, usize, usize, usize)> = None;
+            for (ui, &node) in unrouted.iter().enumerate() {
+                for &v in candidates {
+                    for pos in 0..=sol[v].len() {
+                        with_insert(&sol[v], pos, node, scratch);
+                        let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
+                            continue;
+                        };
+                        let delta = c - cost[v];
+                        if best.is_none_or(|(bd, ..)| delta < bd) {
+                            best = Some((delta, ui, v, pos));
+                        }
                     }
                 }
             }
+            best
+        };
+
+        let mut best = scan(
+            &candidate_vehicles(&sol),
+            &sol,
+            &cost,
+            &unrouted,
+            &mut scratch,
+        );
+
+        // The one empty candidate may be forbidden for every remaining node
+        // while another empty vehicle is not. That is the only way a narrow
+        // scan can miss a feasible insertion, so only then widen it.
+        if best.is_none() {
+            let all: Vec<usize> = (0..nv).collect();
+            if all.len() > candidate_vehicles(&sol).len() {
+                best = scan(&all, &sol, &cost, &unrouted, &mut scratch);
+            }
         }
 
-        let (delta, ui, v, pos) = best.expect("no feasible insertion left — fleet too small?");
+        let Some((delta, ui, v, pos)) = best else {
+            let unroutable = unrouted
+                .iter()
+                .find(|&&n| (0..nv).all(|v| m.vehicle(VehicleId(v as u32)).forbids(n)));
+            match unroutable {
+                Some(n) => panic!("node {} is unroutable: forbidden on every vehicle", n.0),
+                None => panic!("no feasible insertion left — fleet too small?"),
+            }
+        };
         let node = unrouted.swap_remove(ui);
         sol[v].insert(pos, node);
         cost[v] += delta;
@@ -716,7 +748,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::eval_routes;
+    use crate::eval::{eval_routes, visits_all_nodes};
     use crate::model::ModelBuilder;
 
     /// Depot at 0, customers 1..=5 on a line; arc cost is line distance.
@@ -807,6 +839,49 @@ mod tests {
             try_two_opt_star(&m, &mut sol, &eval_route, &mut cost, 0),
             None
         );
+    }
+
+    /// A node forbidden on one vehicle must land on the other, and stay
+    /// there through local search: every operator re-validates via
+    /// `eval_route`, so no move can drag it back.
+    #[test]
+    fn forbidden_node_rides_the_allowed_vehicle() {
+        let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+        let mut b = ModelBuilder::new(6);
+        let cost = b.cost_class(dist);
+        let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+        b.vehicle(NodeId(0), NodeId(0), cost);
+        // Node 1 is closest to the depot; v0 would take it if it could.
+        b.forbid(v0, NodeId(1));
+        b.dimension(
+            "load",
+            |_from, to| if to == NodeId(0) { 0 } else { 1 },
+            vec![3, 3],
+        );
+        let m = b.build();
+
+        assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+        assert!(eval_route(&m, &[NodeId(1)], VehicleId(1)).is_some());
+
+        let sol = solve(&m, Construct::CheapestInsertion, Improve::Gls { iters: 5 });
+        assert!(visits_all_nodes(&m, &sol.routes));
+        assert!(!sol.routes[0].contains(&NodeId(1)));
+        assert!(sol.routes[1].contains(&NodeId(1)));
+    }
+
+    /// Forbidden everywhere is not a fleet problem; the panic must say so.
+    #[test]
+    #[should_panic(expected = "unroutable")]
+    fn node_forbidden_everywhere_panics_clearly() {
+        let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+        let mut b = ModelBuilder::new(6);
+        let cost = b.cost_class(dist);
+        let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+        let v1 = b.vehicle(NodeId(0), NodeId(0), cost);
+        b.forbid(v0, NodeId(3));
+        b.forbid(v1, NodeId(3));
+        let m = b.build();
+        solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
     }
 
     #[test]

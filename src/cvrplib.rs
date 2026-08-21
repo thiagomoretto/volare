@@ -102,6 +102,16 @@ impl Instance {
 /// closure. The model holds no coordinates and knows no metric, so swapping
 /// in an OSRM `/table` response is the same shape.
 pub fn cvrp_model(inst: &Instance, fleet: usize) -> Model {
+    cvrp_model_with(inst, fleet, |_| {})
+}
+
+/// `cvrp_model`, with a hook that runs after the vehicles exist and before
+/// the model is built — where per-vehicle tweaks like `forbid` belong.
+pub fn cvrp_model_with(
+    inst: &Instance,
+    fleet: usize,
+    configure: impl FnOnce(&mut ModelBuilder),
+) -> Model {
     let n = inst.coords.len();
     let mut matrix = vec![0i64; n * n];
     for i in 0..n {
@@ -117,6 +127,7 @@ pub fn cvrp_model(inst: &Instance, fleet: usize) -> Model {
     for _ in 0..fleet {
         b.vehicle(inst.depot, inst.depot, cost_class);
     }
+    configure(&mut b);
     b.dimension(
         "demand",
         move |_from, to| demands[to.index()],

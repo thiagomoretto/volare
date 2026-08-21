@@ -21,6 +21,12 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     }
     let veh = m.vehicle(v);
 
+    // The early-out keeps an unrestricted vehicle at one branch per call;
+    // the scan itself is one bit test per node.
+    if !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n)) {
+        return None;
+    }
+
     for d in m.dimensions() {
         let cap = d.capacity[v.index()];
         let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);

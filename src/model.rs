@@ -20,6 +20,19 @@ pub struct Vehicle {
     pub start: NodeId,
     pub end: NodeId,
     pub cost_class: usize,
+    /// Bitmask over nodes this vehicle may not visit. Empty until the first
+    /// `forbid`, so the common case costs one `is_empty` in `eval_route`.
+    pub forbidden: Box<[u64]>,
+}
+
+impl Vehicle {
+    /// True if this vehicle may not visit `n`.
+    #[inline]
+    pub fn forbids(&self, n: NodeId) -> bool {
+        self.forbidden
+            .get(n.index() / 64)
+            .is_some_and(|w| w >> (n.index() % 64) & 1 == 1)
+    }
 }
 
 pub struct Dimension {
@@ -109,6 +122,7 @@ impl ModelBuilder {
             start,
             end,
             cost_class,
+            forbidden: Box::default(),
         });
         VehicleId(self.vehicles.len() as u32 - 1)
     }
@@ -129,6 +143,18 @@ impl ModelBuilder {
             lower_bound: vec![0; self.node_count],
         });
         self
+    }
+
+    /// Vehicle `v` may never visit node `n`. Construction fails loudly if a
+    /// node ends up forbidden on every vehicle.
+    pub fn forbid(&mut self, v: VehicleId, n: NodeId) {
+        assert!(n.index() < self.node_count, "forbidden node out of range");
+        let words = self.node_count.div_ceil(64);
+        let veh = &mut self.vehicles[v.index()];
+        if veh.forbidden.is_empty() {
+            veh.forbidden = vec![0; words].into_boxed_slice();
+        }
+        veh.forbidden[n.index() / 64] |= 1 << (n.index() % 64);
     }
 
     pub fn build(self) -> Model {
