@@ -1,4 +1,4 @@
-use crate::types::{NodeId, VehicleId};
+use crate::types::{Cost, NodeId, VehicleId};
 
 /// One table, two uses: cost classes and dimension transits.
 ///
@@ -54,6 +54,10 @@ pub struct Model {
     evaluators: Vec<Evaluator>,
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
+    /// Vehicle collecting dropped nodes, if any `allow_drop` was declared.
+    /// Its route *is* the unserved set, so the solver's core invariant —
+    /// every node routed exactly once — survives drops untouched.
+    unserved: Option<VehicleId>,
 }
 
 impl Model {
@@ -85,6 +89,14 @@ impl Model {
     pub fn is_terminal(&self, n: NodeId) -> bool {
         self.vehicles.iter().any(|v| v.start == n || v.end == n)
     }
+
+    /// The vehicle collecting dropped nodes; always the last one, and its
+    /// route is exactly the unserved set. `None` unless the builder saw an
+    /// `allow_drop`.
+    #[inline]
+    pub fn unserved_vehicle(&self) -> Option<VehicleId> {
+        self.unserved
+    }
 }
 
 #[derive(Default)]
@@ -93,6 +105,7 @@ pub struct ModelBuilder {
     evaluators: Vec<Evaluator>,
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
+    drops: Vec<(NodeId, Cost)>,
 }
 
 impl ModelBuilder {
@@ -154,8 +167,51 @@ impl ModelBuilder {
         veh.forbidden[n.index() / 64] |= 1 << (n.index() % 64);
     }
 
-    pub fn build(self) -> Model {
+    /// Node `n` may be left unserved; doing so adds `penalty` to the total
+    /// cost. Nodes never declared stay mandatory: the unserved vehicle is
+    /// built forbidden on everything and each `allow_drop` clears one bit.
+    pub fn allow_drop(&mut self, n: NodeId, penalty: Cost) {
+        assert!(n.index() < self.node_count, "dropped node out of range");
+        self.drops.push((n, penalty));
+    }
+
+    pub fn build(mut self) -> Model {
         assert!(!self.vehicles.is_empty(), "model has no vehicles");
+
+        // The unserved sink materializes here, not in `allow_drop`: the
+        // penalty closure captures a plain `Vec` (no shared state on the
+        // eval hot path), and capacities are padded after every dimension
+        // exists, so call order never matters. Its arc cost charges each
+        // node's penalty on the incoming arc, so the route costs the same
+        // `sum(penalties)` under any permutation.
+        let unserved = if self.drops.is_empty() {
+            None
+        } else {
+            let mut penalty = vec![0; self.node_count];
+            let mut forbidden = vec![!0u64; self.node_count.div_ceil(64)];
+            for (n, p) in self.drops.drain(..) {
+                penalty[n.index()] = p;
+                forbidden[n.index() / 64] &= !(1 << (n.index() % 64));
+            }
+            let depot = self.vehicles[0].start;
+            let cost_class = self.cost_class(
+                move |_from, to| {
+                    if to == depot { 0 } else { penalty[to.index()] }
+                },
+            );
+            let id = VehicleId(self.vehicles.len() as u32);
+            self.vehicles.push(Vehicle {
+                start: depot,
+                end: depot,
+                cost_class,
+                forbidden: forbidden.into_boxed_slice(),
+            });
+            for d in &mut self.dimensions {
+                d.capacity.push(i64::MAX);
+            }
+            Some(id)
+        };
+
         for d in &self.dimensions {
             assert_eq!(
                 d.capacity.len(),
@@ -171,6 +227,7 @@ impl ModelBuilder {
             evaluators: self.evaluators,
             dimensions: self.dimensions,
             vehicles: self.vehicles,
+            unserved,
         }
     }
 }

@@ -103,6 +103,16 @@ pub struct Solution {
     pub cost: Cost,
 }
 
+impl Solution {
+    /// Nodes left unserved — the route of the model's unserved vehicle.
+    /// Empty unless the builder saw an `allow_drop`. Their penalties are
+    /// already inside `cost`.
+    pub fn unserved<'a>(&'a self, m: &'a Model) -> &'a [NodeId] {
+        m.unserved_vehicle()
+            .map_or(&[], |v| &self.routes[v.index()])
+    }
+}
+
 /// The model is borrowed shared: every piece of mutable search state, GLS
 /// penalties included, is owned by the call. One model can therefore back any
 /// number of solves running at once.
@@ -132,11 +142,18 @@ pub fn solve_with(
 ///
 /// One empty is enough only while empty vehicles are interchangeable. Once
 /// they are not — per-vehicle `forbid` sets make them differ — the caller
-/// retries with all of them (see `cheapest_insertion`).
-fn candidate_vehicles(sol: &Routes) -> Vec<usize> {
+/// retries with all of them (see `cheapest_insertion`). The unserved sink
+/// is never interchangeable: dropping must always be on offer, so it is a
+/// candidate whenever it exists, empty or not.
+fn candidate_vehicles(m: &Model, sol: &Routes) -> Vec<usize> {
     let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
         v.push(empty);
+    }
+    if let Some(uv) = m.unserved_vehicle()
+        && !v.contains(&uv.index())
+    {
+        v.push(uv.index());
     }
     v
 }
@@ -189,7 +206,7 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
             best
         };
 
-        let narrow = candidate_vehicles(&sol);
+        let narrow = candidate_vehicles(m, &sol);
         let mut best = scan(&narrow);
 
         // The one empty candidate may be forbidden for every remaining node
@@ -451,7 +468,13 @@ pub fn guided_local_search_with(
 
     // Scale one penalty into arc-cost units, so lambda * penalty is comparable
     // to the distances the operators are trading against it.
-    let customers: usize = sol.iter().map(Vec::len).sum();
+    // Dropped nodes are not customers: they must not dilute lambda.
+    let customers: usize = sol
+        .iter()
+        .enumerate()
+        .filter(|(v, _)| m.unserved_vehicle() != Some(VehicleId(*v as u32)))
+        .map(|(_, r)| r.len())
+        .sum();
     let lambda =
         (LAMBDA_NUMERATOR * best_cost / (LAMBDA_DENOMINATOR * customers.max(1) as Cost)).max(1);
     let mut penalties = Penalties::new(lambda);
@@ -491,6 +514,12 @@ fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
     let mut top: Option<(Cost, Cost)> = None;
 
     for (v, route) in sol.iter().enumerate() {
+        // The unserved vehicle's arc costs are penalties, not travel —
+        // punishing them would pressure the search into serving nodes it
+        // correctly dropped.
+        if m.unserved_vehicle() == Some(VehicleId(v as u32)) {
+            continue;
+        }
         if route.is_empty() {
             continue;
         }
@@ -552,7 +581,7 @@ where
     let without_cost = eval(m, &without, VehicleId(r as u32))?;
 
     let mut scratch = Vec::new();
-    for v in candidate_vehicles(sol) {
+    for v in candidate_vehicles(m, sol) {
         let base = if v == r { &without } else { &sol[v] };
         for pos in 0..=base.len() {
             with_insert(base, pos, u, &mut scratch);
@@ -750,6 +779,40 @@ mod tests {
             vec![3, 3],
         );
         b.build()
+    }
+
+    /// A node cheaper to drop than to serve rides the unserved vehicle and
+    /// pays its penalty; raise the penalty past the detour and it is served.
+    /// Nodes never declared `allow_drop` stay mandatory.
+    #[test]
+    fn dropped_nodes_pay_their_penalty() {
+        let build = |penalty: Cost| {
+            let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+            let mut b = ModelBuilder::new(4);
+            let cost = b.cost_class(dist);
+            b.vehicle(NodeId(0), NodeId(0), cost);
+            b.dimension(
+                "load",
+                |_from, to| if to == NodeId(0) { 0 } else { 1 },
+                vec![3],
+            );
+            b.allow_drop(NodeId(3), penalty);
+            b.build()
+        };
+
+        // Serving node 3 extends the route 0->1->2->0 (40) by 20; penalty 15 wins.
+        let m = build(15);
+        let sol = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
+        assert_eq!(sol.unserved(&m), &[NodeId(3)]);
+        assert_eq!(sol.cost, 40 + 15);
+        assert!(visits_all_nodes(&m, &sol.routes));
+
+        // Penalty 30 loses to the 20 detour: node 3 is served.
+        let m = build(30);
+        let sol = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
+        assert!(sol.unserved(&m).is_empty());
+        assert_eq!(sol.cost, 60);
+        assert!(visits_all_nodes(&m, &sol.routes));
     }
 
     /// Both routes are full, so no node can move anywhere: only a trade helps.

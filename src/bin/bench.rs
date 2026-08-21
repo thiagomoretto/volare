@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use volare::Construct;
 use volare::cvrplib::{Instance, cvrp_model, cvrp_model_with, parse_sol};
-use volare::eval::{eval_routes, visits_all_nodes};
+use volare::eval::{eval_route, eval_routes, visits_all_nodes};
 use volare::model::{Model, ModelBuilder};
 use volare::solver::{
     Improve, SearchEvent, Solution, first_solution_with, guided_local_search_with,
@@ -46,8 +46,8 @@ fn main() {
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
 
     assert!(
-        scenario.is_none_or(|s| s == "forbid"),
-        "unknown --scenario (have: forbid)"
+        scenario.is_none_or(|s| s == "forbid" || s == "drop"),
+        "unknown --scenario (have: forbid, drop)"
     );
     assert!(
         !(write_baseline && scenario.is_some()),
@@ -172,6 +172,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         let mut note = String::new();
         let model = cvrp_model_with(&inst, fleet, |b| match scenario {
             "forbid" => forbid_model(&inst, b, &mut note),
+            "drop" => drop_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
         let sol = solve(&model, gls, &mut log);
@@ -181,6 +182,10 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         assert!(visits_all_nodes(&model, &sol.routes));
         match scenario {
             "forbid" => check_forbid(&model, &sol, &inst.name),
+            "drop" => {
+                check_drop(&model, &sol, &inst);
+                note = format!("{note}->{}", sol.unserved(&model).len());
+            }
             _ => unreachable!("gated in main"),
         }
 
@@ -214,6 +219,47 @@ fn forbid_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
         }
     }
     *note = pairs.to_string();
+}
+
+/// Customers with `id % 11 == 0` (~9%) may be dropped for a small penalty —
+/// in detour territory, so outliers get dropped and cluster nodes get
+/// served: a real tradeoff. The note becomes `declared->dropped` once the
+/// solution exists.
+fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
+    let n = inst.coords.len() as u32;
+    let mut declared = 0;
+    for c in 0..n {
+        let node = NodeId(c);
+        if c % 11 == 0 && node != inst.depot {
+            b.allow_drop(node, drop_penalty(inst, node));
+            declared += 1;
+        }
+    }
+    *note = declared.to_string();
+}
+
+/// One rule, one place: `check_drop` re-derives expected sink cost from this,
+/// so the scenario and its check can never drift apart.
+fn drop_penalty(inst: &Instance, n: NodeId) -> i64 {
+    inst.dist(inst.depot, n) / 16
+}
+
+/// The sink holds only declared nodes (it was built forbidden on the rest),
+/// and its route cost is exactly the declared penalties of the dropped set.
+fn check_drop(model: &Model, sol: &Solution, inst: &Instance) {
+    let uv = model.unserved_vehicle().expect("drop scenario has a sink");
+    let sink_cost = eval_route(model, &sol.routes[uv.index()], uv).unwrap();
+    let dropped_penalties: i64 = sol
+        .unserved(model)
+        .iter()
+        .map(|&n| drop_penalty(inst, n))
+        .sum();
+    assert_eq!(
+        sink_cost, dropped_penalties,
+        "{}: sink cost != dropped nodes' penalties",
+        inst.name
+    );
+    assert_eq!(Some(sol.cost), eval_routes(model, &sol.routes));
 }
 
 fn check_forbid(model: &Model, sol: &Solution, name: &str) {
