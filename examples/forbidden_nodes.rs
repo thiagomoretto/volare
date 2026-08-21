@@ -34,8 +34,7 @@ fn main() {
     let truck = b.vehicle(NodeId(0), NodeId(0), cost);
     b.dimension("demand", move |_from, to| demands[to.index()], vec![11, 11]);
 
-    // The van is too small for stop 4's delivery, the reason lives outside
-    // the model; the model only records the exclusion.
+    // Stop 4's delivery doesn't fit in the van, so the truck has to take it.
     b.forbid(van, NodeId(4));
 
     let model = b.build();

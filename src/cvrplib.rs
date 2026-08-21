@@ -95,9 +95,6 @@ impl Instance {
     }
 }
 
-/// Build a plain CVRP model: one depot, `fleet` identical vehicles, one
-/// capacity dimension.
-///
 /// The distances are baked into a matrix here and enter the model only as a
 /// closure. The model holds no coordinates and knows no metric, so swapping
 /// in an OSRM `/table` response is the same shape.

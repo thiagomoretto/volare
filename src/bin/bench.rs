@@ -67,7 +67,6 @@ fn main() {
     }
 }
 
-/// The default report: gap against the .sol reference, guarded by baseline.csv.
 fn bench_reference(
     root: &Path,
     instances: &[PathBuf],
@@ -157,7 +156,6 @@ fn bench_reference(
     }
 }
 
-/// A scenario report: constrained cost against the same instance solved open.
 fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
     println!(
         "{:<14} {:>5} {:>5} {:>9} {:>9} {:>7} {:>7}",

@@ -94,8 +94,6 @@ pub enum Improve {
     Gls { iters: usize },
 }
 
-/// What a solve leaves behind: the routes and their true total cost.
-///
 /// `cost` is the true cost — never the penalized number a GLS descent was
 /// reading — and the solver only returns feasible routes, so it is a plain
 /// `Cost`, not an `Option`.
