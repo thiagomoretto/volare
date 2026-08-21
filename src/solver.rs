@@ -172,18 +172,13 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
 
     while !unrouted.is_empty() {
         // (delta, unrouted index, vehicle, position)
-        let scan = |candidates: &[usize],
-                    sol: &Routes,
-                    cost: &[Cost],
-                    unrouted: &[NodeId],
-                    scratch: &mut Vec<NodeId>|
-         -> Option<(Cost, usize, usize, usize)> {
+        let mut scan = |candidates: &[usize]| {
             let mut best: Option<(Cost, usize, usize, usize)> = None;
             for (ui, &node) in unrouted.iter().enumerate() {
                 for &v in candidates {
                     for pos in 0..=sol[v].len() {
-                        with_insert(&sol[v], pos, node, scratch);
-                        let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
+                        with_insert(&sol[v], pos, node, &mut scratch);
+                        let Some(c) = eval_route(m, &scratch, VehicleId(v as u32)) else {
                             continue;
                         };
                         let delta = c - cost[v];
@@ -196,32 +191,25 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
             best
         };
 
-        let mut best = scan(
-            &candidate_vehicles(&sol),
-            &sol,
-            &cost,
-            &unrouted,
-            &mut scratch,
-        );
+        let narrow = candidate_vehicles(&sol);
+        let mut best = scan(&narrow);
 
         // The one empty candidate may be forbidden for every remaining node
         // while another empty vehicle is not. That is the only way a narrow
         // scan can miss a feasible insertion, so only then widen it.
-        if best.is_none() {
+        if best.is_none() && narrow.len() < nv {
             let all: Vec<usize> = (0..nv).collect();
-            if all.len() > candidate_vehicles(&sol).len() {
-                best = scan(&all, &sol, &cost, &unrouted, &mut scratch);
-            }
+            best = scan(&all);
         }
 
         let Some((delta, ui, v, pos)) = best else {
-            let unroutable = unrouted
+            if let Some(n) = unrouted
                 .iter()
-                .find(|&&n| (0..nv).all(|v| m.vehicle(VehicleId(v as u32)).forbids(n)));
-            match unroutable {
-                Some(n) => panic!("node {} is unroutable: forbidden on every vehicle", n.0),
-                None => panic!("no feasible insertion left — fleet too small?"),
+                .find(|&&n| (0..nv).all(|v| m.vehicle(VehicleId(v as u32)).forbids(n)))
+            {
+                panic!("node {} is unroutable: forbidden on every vehicle", n.0);
             }
+            panic!("no feasible insertion left — fleet too small?");
         };
         let node = unrouted.swap_remove(ui);
         sol[v].insert(pos, node);
@@ -748,7 +736,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::{eval_routes, visits_all_nodes};
+    use crate::eval::visits_all_nodes;
     use crate::model::ModelBuilder;
 
     /// Depot at 0, customers 1..=5 on a line; arc cost is line distance.

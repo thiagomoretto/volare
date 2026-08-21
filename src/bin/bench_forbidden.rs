@@ -46,19 +46,20 @@ fn main() {
     for vrp in &instances {
         let inst = Instance::parse(&fs::read_to_string(vrp).unwrap());
         let n = inst.coords.len();
+        let fleet = n - 1;
 
         let started = Instant::now();
         let open = solve(
-            &cvrp_model(&inst, n - 1),
+            &cvrp_model(&inst, fleet),
             Construct::CheapestInsertion,
             Improve::HillClimb,
         )
         .cost;
 
         let mut pairs = 0;
-        let model = cvrp_model_with(&inst, n - 1, |b| {
+        let model = cvrp_model_with(&inst, fleet, |b| {
             for c in 0..n as u32 {
-                for v in 0..(n - 1) as u32 {
+                for v in 0..fleet as u32 {
                     if c % 7 == 0 && (v + c) % 2 == 0 && NodeId(c) != inst.depot {
                         b.forbid(VehicleId(v), NodeId(c));
                         pairs += 1;
