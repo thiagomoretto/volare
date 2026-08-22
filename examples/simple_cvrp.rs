@@ -27,7 +27,7 @@ fn main() {
     });
 
     // Two vehicles, both starting and ending at the depot. Vehicles come
-    // before dimensions: capacities are indexed by vehicle.
+    // before dimensions: cumul limits are indexed by vehicle.
     b.vehicle(NodeId(0), NodeId(0), cost);
     b.vehicle(NodeId(0), NodeId(0), cost);
     b.dimension("demand", move |_from, to| demands[to.index()], vec![11, 11]);

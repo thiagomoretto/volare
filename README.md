@@ -41,7 +41,7 @@ let cost = b.cost_class(move |from, to| {
 });
 
 // Two vehicles, both starting and ending at node 0. Add vehicles before
-// dimensions: capacities are indexed by vehicle.
+// dimensions: cumul limits are indexed by vehicle.
 b.vehicle(NodeId(0), NodeId(0), cost);
 b.vehicle(NodeId(0), NodeId(0), cost);
 

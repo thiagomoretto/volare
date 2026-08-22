@@ -28,7 +28,7 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     }
 
     for d in m.dimensions() {
-        let cap = d.capacity[v.index()];
+        let cap = d.max_cumul[v.index()];
         let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
         if cumul > cap {
             return None;

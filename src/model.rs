@@ -37,8 +37,9 @@ pub struct Dimension {
     pub name: String,
     /// Index into the evaluator table.
     pub transit: usize,
-    /// Upper bound on the cumul, per vehicle.
-    pub capacity: Vec<i64>,
+    /// Upper bound on the cumul, per vehicle: load capacity, max route
+    /// distance, max duration — whatever the transit accumulates.
+    pub max_cumul: Vec<i64>,
     pub start_cumul: i64,
     /// Per-node lower bound on the cumul. All zeros until time windows exist;
     /// the `max` in the cumul pass is what makes filling this in enough.
@@ -137,18 +138,18 @@ impl ModelBuilder {
         VehicleId(self.vehicles.len() as u32 - 1)
     }
 
-    /// `capacity` is per vehicle, so add vehicles first.
+    /// `max_cumul` is per vehicle, so add vehicles first.
     pub fn dimension(
         &mut self,
         name: &str,
         transit: impl Fn(NodeId, NodeId) -> i64 + Send + Sync + 'static,
-        capacity: Vec<i64>,
+        max_cumul: Vec<i64>,
     ) -> &mut Self {
         self.evaluators.push(Box::new(transit));
         self.dimensions.push(Dimension {
             name: name.to_string(),
             transit: self.evaluators.len() - 1,
-            capacity,
+            max_cumul,
             start_cumul: 0,
             lower_bound: vec![0; self.node_count],
         });
@@ -180,7 +181,7 @@ impl ModelBuilder {
 
         // The unserved sink materializes here, not in `allow_drop`: the
         // penalty closure captures a plain `Vec` (no shared state on the
-        // eval hot path), and capacities are padded after every dimension
+        // eval hot path), and cumul limits are padded after every dimension
         // exists, so call order never matters. Its arc cost charges each
         // node's penalty on the incoming arc, so the route costs the same
         // `sum(penalties)` under any permutation.
@@ -207,18 +208,18 @@ impl ModelBuilder {
                 forbidden: forbidden.into_boxed_slice(),
             });
             for d in &mut self.dimensions {
-                d.capacity.push(i64::MAX);
+                d.max_cumul.push(i64::MAX);
             }
             Some(id)
         };
 
         for d in &self.dimensions {
             assert_eq!(
-                d.capacity.len(),
+                d.max_cumul.len(),
                 self.vehicles.len(),
-                "dimension `{}` has {} capacities for {} vehicles — add vehicles before dimensions",
+                "dimension `{}` has {} cumul limits for {} vehicles — add vehicles before dimensions",
                 d.name,
-                d.capacity.len(),
+                d.max_cumul.len(),
                 self.vehicles.len()
             );
         }
