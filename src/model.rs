@@ -41,9 +41,11 @@ pub struct Dimension {
     /// distance, max duration — whatever the transit accumulates.
     pub max_cumul: Vec<i64>,
     pub start_cumul: i64,
-    /// Per-node lower bound on the cumul. All zeros until time windows exist;
-    /// the `max` in the cumul pass is what makes filling this in enough.
+    /// Per-node bounds on the cumul: arriving above `upper_bound` is
+    /// infeasible, arriving below `lower_bound` waits — the `max` in the
+    /// cumul pass clamps up for free. Together they are a time window.
     pub lower_bound: Vec<i64>,
+    pub upper_bound: Vec<i64>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -148,8 +150,23 @@ impl ModelBuilder {
             max_cumul,
             start_cumul: 0,
             lower_bound: vec![0; self.node_count],
+            upper_bound: vec![i64::MAX; self.node_count],
         });
         self
+    }
+
+    /// Window on the cumul at node `n` for dimension `name`: arrive after
+    /// `ub` and the route is infeasible, arrive before `lb` and the vehicle
+    /// waits.
+    pub fn cumul_bounds(&mut self, name: &str, n: NodeId, lb: i64, ub: i64) {
+        assert!(n.index() < self.node_count, "node out of range");
+        let d = self
+            .dimensions
+            .iter_mut()
+            .find(|d| d.name == name)
+            .expect("unknown dimension");
+        d.lower_bound[n.index()] = lb;
+        d.upper_bound[n.index()] = ub;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
