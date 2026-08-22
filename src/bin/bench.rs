@@ -46,8 +46,8 @@ fn main() {
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
 
     assert!(
-        scenario.is_none_or(|s| s == "forbid" || s == "drop"),
-        "unknown --scenario (have: forbid, drop)"
+        scenario.is_none_or(|s| s == "forbid" || s == "drop" || s == "tw"),
+        "unknown --scenario (have: forbid, drop, tw)"
     );
     assert!(
         !(write_baseline && scenario.is_some()),
@@ -173,6 +173,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         let model = cvrp_model_with(&inst, fleet, |b| match scenario {
             "forbid" => forbid_model(&inst, b, &mut note),
             "drop" => drop_model(&inst, b, &mut note),
+            "tw" => tw_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
         let sol = solve(&model, gls, &mut log);
@@ -185,6 +186,10 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "drop" => {
                 check_drop(&model, &sol, &inst);
                 note = format!("{note}->{}", sol.unserved(&model).len());
+            }
+            "tw" => {
+                let waits = check_tw(&model, &sol, &inst.name);
+                note = format!("{note}~w{waits}");
             }
             _ => unreachable!("gated in main"),
         }
@@ -234,6 +239,63 @@ fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
         }
     }
     *note = declared.to_string();
+}
+
+/// Time rides the same metric as cost: travel time = distance, no service
+/// time. Customers with `id % 5 == 0` get a window anchored on their direct
+/// arrival time `t = dist(depot, c)`: open at `3t/2` — above any possible
+/// arrival by triangle inequality, so early visits genuinely wait — and
+/// close at `3t + 10`. A single-customer route waits at open and departs
+/// well before close, so with a free fleet the scenario is feasible by
+/// construction.
+fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
+    let n = inst.coords.len();
+    let coords = std::sync::Arc::new(inst.coords.clone());
+    b.dimension(
+        "time",
+        move |from, to| volare::cvrplib::euc_2d(coords[from.index()], coords[to.index()]),
+        vec![i64::MAX; free_fleet(inst)],
+    );
+    let mut windowed = 0;
+    for c in 0..n as u32 {
+        let node = NodeId(c);
+        if c % 5 == 0 && node != inst.depot {
+            let t = inst.dist(inst.depot, node);
+            b.cumul_bounds("time", node, 3 * t / 2, 3 * t + 10);
+            windowed += 1;
+        }
+    }
+    *note = windowed.to_string();
+}
+
+/// Re-walk every route on the time dimension and assert no late arrival;
+/// returns how many visits waited, to show the clamp actually fires.
+fn check_tw(model: &Model, sol: &Solution, name: &str) -> usize {
+    let d = model
+        .dimensions()
+        .iter()
+        .find(|d| d.name == "time")
+        .expect("tw scenario has a time dimension");
+    let mut waits = 0;
+    for (v, route) in sol.routes.iter().enumerate() {
+        let veh = model.vehicle(VehicleId(v as u32));
+        let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
+        let mut prev = veh.start;
+        for &node in route.iter().chain(std::iter::once(&veh.end)) {
+            let arrive = cumul + model.eval(d.transit, prev, node);
+            assert!(
+                arrive <= d.upper_bound[node.index()],
+                "{name}: vehicle {v} arrives at node {} after its window closes",
+                node.index()
+            );
+            if arrive < d.lower_bound[node.index()] {
+                waits += 1;
+            }
+            cumul = arrive.max(d.lower_bound[node.index()]);
+            prev = node;
+        }
+    }
+    waits
 }
 
 /// Shared by `check_drop`, so the scenario and its check never drift apart.
