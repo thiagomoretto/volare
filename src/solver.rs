@@ -104,9 +104,7 @@ pub struct Solution {
 }
 
 impl Solution {
-    /// Nodes left unserved — the route of the model's unserved vehicle.
-    /// Empty unless the builder saw an `allow_drop`. Their penalties are
-    /// already inside `cost`.
+    /// Nodes left unserved (their penalties are already inside `cost`).
     pub fn unserved<'a>(&'a self, m: &'a Model) -> &'a [NodeId] {
         m.unserved_vehicle()
             .map_or(&[], |v| &self.routes[v.index()])
@@ -142,9 +140,8 @@ pub fn solve_with(
 ///
 /// One empty is enough only while empty vehicles are interchangeable. Once
 /// they are not — per-vehicle `forbid` sets make them differ — the caller
-/// retries with all of them (see `cheapest_insertion`). The unserved sink
-/// is never interchangeable: dropping must always be on offer, so it is a
-/// candidate whenever it exists, empty or not.
+/// retries with all of them (see `cheapest_insertion`). The unserved sink is
+/// always a candidate: dropping must be on offer even when it is empty.
 fn candidate_vehicles(m: &Model, sol: &Routes) -> Vec<usize> {
     let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
@@ -514,9 +511,7 @@ fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
     let mut top: Option<(Cost, Cost)> = None;
 
     for (v, route) in sol.iter().enumerate() {
-        // The unserved vehicle's arc costs are penalties, not travel —
-        // punishing them would pressure the search into serving nodes it
-        // correctly dropped.
+        // Sink arcs are penalties, not travel; never punish them.
         if m.unserved_vehicle() == Some(VehicleId(v as u32)) {
             continue;
         }
@@ -781,9 +776,7 @@ mod tests {
         b.build()
     }
 
-    /// A node cheaper to drop than to serve rides the unserved vehicle and
-    /// pays its penalty; raise the penalty past the detour and it is served.
-    /// Nodes never declared `allow_drop` stay mandatory.
+    /// A node cheaper to drop than to serve pays its penalty instead.
     #[test]
     fn dropped_nodes_pay_their_penalty() {
         let build = |penalty: Cost| {
@@ -800,14 +793,13 @@ mod tests {
             b.build()
         };
 
-        // Serving node 3 extends the route 0->1->2->0 (40) by 20; penalty 15 wins.
+        // Serving node 3 extends the route by 20; penalty 15 wins, 30 loses.
         let m = build(15);
         let sol = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
         assert_eq!(sol.unserved(&m), &[NodeId(3)]);
         assert_eq!(sol.cost, 40 + 15);
         assert!(visits_all_nodes(&m, &sol.routes));
 
-        // Penalty 30 loses to the 20 detour: node 3 is served.
         let m = build(30);
         let sol = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
         assert!(sol.unserved(&m).is_empty());

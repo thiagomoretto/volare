@@ -221,10 +221,8 @@ fn forbid_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = pairs.to_string();
 }
 
-/// Customers with `id % 11 == 0` (~9%) may be dropped for a small penalty —
-/// in detour territory, so outliers get dropped and cluster nodes get
-/// served: a real tradeoff. The note becomes `declared->dropped` once the
-/// solution exists.
+/// ~9% of customers may be dropped for a detour-sized penalty; the note
+/// becomes `declared->dropped` once the solution exists.
 fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     let n = inst.coords.len() as u32;
     let mut declared = 0;
@@ -238,14 +236,12 @@ fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = declared.to_string();
 }
 
-/// One rule, one place: `check_drop` re-derives expected sink cost from this,
-/// so the scenario and its check can never drift apart.
+/// Shared by `check_drop`, so the scenario and its check never drift apart.
 fn drop_penalty(inst: &Instance, n: NodeId) -> i64 {
     inst.dist(inst.depot, n) / 16
 }
 
-/// The sink holds only declared nodes (it was built forbidden on the rest),
-/// and its route cost is exactly the declared penalties of the dropped set.
+/// The sink's route cost must equal the dropped nodes' declared penalties.
 fn check_drop(model: &Model, sol: &Solution, inst: &Instance) {
     let uv = model.unserved_vehicle().expect("drop scenario has a sink");
     let sink_cost = eval_route(model, &sol.routes[uv.index()], uv).unwrap();
