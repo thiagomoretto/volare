@@ -1,6 +1,7 @@
 pub mod cvrplib;
 pub mod eval;
 pub mod model;
+pub mod solomon;
 pub mod solver;
 pub mod types;
 
