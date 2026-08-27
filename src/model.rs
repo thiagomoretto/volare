@@ -33,6 +33,15 @@ impl Vehicle {
     }
 }
 
+/// `max_cumul` and `upper_bound` are the same kind of bound on two axes.
+/// Per vehicle, `max_cumul` says what a *vehicle* can carry or endure
+/// (heterogeneous fleet); per node, `upper_bound` says when a *node* stops
+/// accepting arrivals (window close). They also bite at different moments:
+/// `upper_bound` checks the arrival before the wait clamp — arriving early
+/// and waiting is fine — while `max_cumul` checks after it, so waiting does
+/// count against a vehicle's own deadline. Neither expresses the other, and
+/// with negative transits (pickup-and-delivery load) the per-vehicle cap
+/// binds at the mid-route peak where an end-node bound would miss it.
 pub struct Dimension {
     pub name: String,
     /// Index into the evaluator table.
