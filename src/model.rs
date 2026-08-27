@@ -33,31 +33,23 @@ impl Vehicle {
     }
 }
 
-/// A quantity that accumulates a transit along a route, bounded per vehicle
+/// A quantity accumulated along a route by a transit, bounded per vehicle
 /// and per node.
 ///
-/// [`max_cumul`](Self::max_cumul) and [`upper_bound`](Self::upper_bound) are
-/// the same kind of bound on two axes. Per vehicle, `max_cumul` says what a
-/// *vehicle* can carry or endure (heterogeneous fleet); per node,
-/// `upper_bound` says when a *node* stops accepting arrivals (window close).
-/// Neither expresses the other.
-///
-/// They also bite at different moments. `upper_bound` checks the arrival
-/// before the wait clamp, so arriving early and waiting is fine. `max_cumul`
-/// checks after it, so waiting does count against a vehicle's own deadline.
-/// With negative transits (pickup-and-delivery load) the per-vehicle cap
-/// binds at the mid-route peak, where an end-node bound would miss it.
+/// [`max_cumul`](Self::max_cumul) bounds what a vehicle can carry or endure.
+/// [`lower_bound`](Self::lower_bound) and [`upper_bound`](Self::upper_bound)
+/// form a window per node: an early arrival waits, a late one is infeasible.
+/// The two upper bounds check at different moments. `upper_bound` checks the
+/// arrival before the wait, `max_cumul` after it, so waiting counts against
+/// the vehicle but not against the node. Neither expresses the other. With
+/// negative transits (pickup and delivery) `max_cumul` binds at the mid-route
+/// peak, where an end-node bound would not.
 pub struct Dimension {
     pub name: String,
     /// Index into the evaluator table.
     pub transit: usize,
-    /// Upper bound on the cumul, per vehicle: load capacity, max route
-    /// distance, max duration — whatever the transit accumulates.
     pub max_cumul: Vec<i64>,
     pub start_cumul: i64,
-    /// Per-node bounds on the cumul: arriving above `upper_bound` is
-    /// infeasible, arriving below `lower_bound` waits — the `max` in the
-    /// cumul pass clamps up for free. Together they are a time window.
     pub lower_bound: Vec<i64>,
     pub upper_bound: Vec<i64>,
 }
