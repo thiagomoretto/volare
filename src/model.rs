@@ -33,17 +33,25 @@ impl Vehicle {
     }
 }
 
+/// A quantity accumulated along a route by a transit, bounded per vehicle
+/// and per node.
+///
+/// [`max_cumul`](Self::max_cumul) bounds what a vehicle can carry or endure.
+/// [`lower_bound`](Self::lower_bound) and [`upper_bound`](Self::upper_bound)
+/// form a window per node: an early arrival waits, a late one is infeasible.
+/// The two upper bounds check at different moments. `upper_bound` checks the
+/// arrival before the wait, `max_cumul` after it, so waiting counts against
+/// the vehicle but not against the node. Neither expresses the other. With
+/// negative transits (pickup and delivery) `max_cumul` binds at the mid-route
+/// peak, where an end-node bound would not.
 pub struct Dimension {
     pub name: String,
     /// Index into the evaluator table.
     pub transit: usize,
-    /// Upper bound on the cumul, per vehicle: load capacity, max route
-    /// distance, max duration — whatever the transit accumulates.
     pub max_cumul: Vec<i64>,
     pub start_cumul: i64,
-    /// Per-node lower bound on the cumul. All zeros until time windows exist;
-    /// the `max` in the cumul pass is what makes filling this in enough.
     pub lower_bound: Vec<i64>,
+    pub upper_bound: Vec<i64>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -148,8 +156,21 @@ impl ModelBuilder {
             max_cumul,
             start_cumul: 0,
             lower_bound: vec![0; self.node_count],
+            upper_bound: vec![i64::MAX; self.node_count],
         });
         self
+    }
+
+    /// Set the window `[lb, ub]` on the cumul of dimension `name` at node `n`.
+    pub fn cumul_bounds(&mut self, name: &str, n: NodeId, lb: i64, ub: i64) {
+        assert!(n.index() < self.node_count, "node out of range");
+        let d = self
+            .dimensions
+            .iter_mut()
+            .find(|d| d.name == name)
+            .expect("unknown dimension");
+        d.lower_bound[n.index()] = lb;
+        d.upper_bound[n.index()] = ub;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
