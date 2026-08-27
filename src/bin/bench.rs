@@ -380,7 +380,7 @@ fn read_baseline(path: &Path) -> HashMap<String, f64> {
         .collect()
 }
 
-/// Pull <size> out of an X-n<size>-k<vehicles> filename, to sort the report.
+/// Pull `size` out of an `X-n<size>-k<vehicles>` filename, to sort the report.
 /// Names without the pattern (the Belgium set) are the big ones — sort them
 /// last so a full run fails fast on the small instances first.
 fn instance_size(p: &Path) -> u32 {
