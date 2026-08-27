@@ -44,7 +44,7 @@ fn bks_routes_reproduce_published_cost() {
 
         // Negative control: windows are directional, so reversing a route
         // should almost always break one. If most reversals stay feasible,
-        // the window check is not actually biting.
+        // the window check is not enforced.
         let broken = sol
             .routes
             .iter()
@@ -56,7 +56,7 @@ fn bks_routes_reproduce_published_cost() {
             .count();
         assert!(
             broken * 2 > sol.routes.len(),
-            "{}: only {broken}/{} reversed routes infeasible — windows not biting",
+            "{}: only {broken}/{} reversed routes infeasible: windows not enforced",
             inst.name,
             sol.routes.len()
         );
