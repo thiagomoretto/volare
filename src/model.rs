@@ -161,9 +161,7 @@ impl ModelBuilder {
         self
     }
 
-    /// Window on the cumul at node `n` for dimension `name`: arrive after
-    /// `ub` and the route is infeasible, arrive before `lb` and the vehicle
-    /// waits.
+    /// Set the window `[lb, ub]` on the cumul of dimension `name` at node `n`.
     pub fn cumul_bounds(&mut self, name: &str, n: NodeId, lb: i64, ub: i64) {
         assert!(n.index() < self.node_count, "node out of range");
         let d = self

@@ -1,9 +1,9 @@
-//! Solomon/Gehring–Homberger VRPTW reader (VRPLIB layout, DIMACS distance
-//! convention: euclidean truncated to one decimal). Every time and cost is
-//! scaled by [`SCALE`] into integers, so published costs reproduce exactly.
+//! Solomon/Gehring–Homberger VRPTW reader: VRPLIB layout, DIMACS metric
+//! (euclidean truncated to one decimal). Times and costs are scaled by
+//! [`SCALE`] into integers, so published costs reproduce exactly.
 //!
-//! Service time is folded into the time transit — `time(i, j)` is service at
-//! `i` plus travel — so a window's close is the latest *start* of service,
+//! Service time is folded into the time transit: `time(i, j)` is service at
+//! `i` plus travel. A window's close is then the latest start of service,
 //! the Solomon convention.
 
 use std::sync::Arc;
@@ -109,10 +109,9 @@ impl TwInstance {
     }
 }
 
-/// Cost is pure distance; the time dimension rides distance plus service at
-/// the from-node, and the windows land as cumul bounds. The depot's due date
-/// bounds the return arrival because the end terminal is a node like any
-/// other in the cumul pass.
+/// Cost is distance. Time is distance plus service at the from-node, with
+/// the windows as cumul bounds. The depot's due date bounds the return,
+/// since the end terminal is a node like any other in the cumul pass.
 pub fn vrptw_model(inst: &TwInstance, fleet: usize) -> Model {
     let n = inst.coords.len();
     let mut matrix = vec![0i64; n * n];

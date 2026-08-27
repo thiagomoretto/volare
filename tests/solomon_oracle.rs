@@ -1,8 +1,7 @@
-//! VRPTW oracle: re-evaluate published best-known routes through
-//! `eval_route`. Every route must come back feasible — windows, capacity and
-//! all — and the total must equal the published cost exactly (both sides in
-//! tenths). This validates the window semantics against someone else's
-//! answers instead of ours.
+//! VRPTW oracle: published best-known routes through `eval_route`. Every
+//! route must be feasible and the total must equal the published cost
+//! exactly, both in tenths. Validates the window semantics against someone
+//! else's answers.
 
 use std::fs;
 use std::path::Path;

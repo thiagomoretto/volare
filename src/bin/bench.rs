@@ -241,13 +241,11 @@ fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = declared.to_string();
 }
 
-/// Time rides the same metric as cost: travel time = distance, no service
-/// time. Customers with `id % 5 == 0` get a window anchored on their direct
-/// arrival time `t = dist(depot, c)`: open at `3t/2` — above any possible
-/// arrival by triangle inequality, so early visits genuinely wait — and
-/// close at `3t + 10`. A single-customer route waits at open and departs
-/// well before close, so with a free fleet the scenario is feasible by
-/// construction.
+/// Time is distance, no service time. Every fifth customer gets a window
+/// on its direct arrival time `t = dist(depot, c)`: open at `3t/2`, above
+/// any possible arrival (triangle inequality), so early visits wait; close
+/// at `3t + 10`, so a single-customer route always fits. With a free fleet
+/// the scenario is feasible by construction.
 fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     let n = inst.coords.len();
     let coords = std::sync::Arc::new(inst.coords.clone());
@@ -268,8 +266,8 @@ fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = windowed.to_string();
 }
 
-/// Re-walk every route on the time dimension and assert no late arrival;
-/// returns how many visits waited, to show the clamp actually fires.
+/// Re-walk every route on the time dimension and assert no late arrival.
+/// Returns the number of waits, proof that the clamp fires.
 fn check_tw(model: &Model, sol: &Solution, name: &str) -> usize {
     let d = model
         .dimensions()
