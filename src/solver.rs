@@ -172,6 +172,52 @@ pub fn first_solution_with(
     }
 }
 
+/// A candidate insertion: its delta cost, the vehicle, and the position.
+type Insertion = (Cost, usize, usize);
+
+/// Cheapest feasible position for `u` in route `v`, or `None` if it has none.
+fn best_in_route(
+    m: &Model,
+    sol: &Routes,
+    cost: &[Cost],
+    v: usize,
+    u: NodeId,
+    scratch: &mut Vec<NodeId>,
+) -> Option<Insertion> {
+    let mut best: Option<Insertion> = None;
+    for pos in 0..=sol[v].len() {
+        with_insert(&sol[v], pos, u, scratch);
+        let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
+            continue;
+        };
+        let delta = c - cost[v];
+        if best.is_none_or(|(bd, ..)| delta < bd) {
+            best = Some((delta, v, pos));
+        }
+    }
+    best
+}
+
+/// Cheapest feasible position for `u` across `vs`; ties go to the first `vs`.
+fn best_over(
+    m: &Model,
+    sol: &Routes,
+    cost: &[Cost],
+    vs: &[usize],
+    u: NodeId,
+    scratch: &mut Vec<NodeId>,
+) -> Option<Insertion> {
+    let mut best: Option<Insertion> = None;
+    for &v in vs {
+        if let Some(c) = best_in_route(m, sol, cost, v, u, scratch)
+            && best.is_none_or(|(bd, ..)| c.0 < bd)
+        {
+            best = Some(c);
+        }
+    }
+    best
+}
+
 pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
     let mut sol: Routes = vec![Vec::new(); nv];
@@ -182,39 +228,70 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
         .collect();
     let mut scratch = Vec::new();
 
-    while !unrouted.is_empty() {
-        // (delta, unrouted index, vehicle, position)
-        let mut scan = |candidates: &[usize]| {
-            let mut best: Option<(Cost, usize, usize, usize)> = None;
-            for (ui, &node) in unrouted.iter().enumerate() {
-                for &v in candidates {
-                    for pos in 0..=sol[v].len() {
-                        with_insert(&sol[v], pos, node, &mut scratch);
-                        let Some(c) = eval_route(m, &scratch, VehicleId(v as u32)) else {
-                            continue;
-                        };
-                        let delta = c - cost[v];
-                        if best.is_none_or(|(bd, ..)| delta < bd) {
-                            best = Some((delta, ui, v, pos));
-                        }
-                    }
-                }
-            }
-            best
-        };
+    // Each node's cheapest insertion among the used routes, parallel to
+    // `unrouted`. Empty candidates stay out: they cost one position to price,
+    // and one becomes a used route on nearly every insertion.
+    let mut best: Vec<Option<Insertion>> = vec![None; unrouted.len()];
+    let mut dirty = vec![true; unrouted.len()];
+    // The route the last insertion grew, the only one that can be stale.
+    let mut changed: Option<usize> = None;
 
-        let narrow = candidate_vehicles(m, &sol);
-        let mut best = scan(&narrow);
+    while !unrouted.is_empty() {
+        // `candidate_vehicles` keeps used routes in a fixed order, so a cached
+        // entry stays comparable with a fresh one.
+        let cands = candidate_vehicles(m, &sol);
+        let (used, empty): (Vec<usize>, Vec<usize>) =
+            cands.iter().partition(|&&v| !sol[v].is_empty());
+
+        let mut pick: Option<(Insertion, usize)> = None;
+        for i in 0..unrouted.len() {
+            let u = unrouted[i];
+            if dirty[i] {
+                best[i] = best_over(m, &sol, &cost, &used, u, &mut scratch);
+                dirty[i] = false;
+            } else if let Some(t) = changed {
+                let held = best[i];
+                let fresh_t = best_in_route(m, &sol, &cost, t, u, &mut scratch);
+                // Every route but `t` was already worse and none of them
+                // moved, so only a `t` that got worse needs a full rescan.
+                best[i] = match (held, fresh_t) {
+                    (Some((d, v, _)), Some(c)) if v == t && c.0 <= d => Some(c),
+                    (Some((_, v, _)), _) if v == t => {
+                        best_over(m, &sol, &cost, &used, u, &mut scratch)
+                    }
+                    (_, Some(c)) if held.is_none_or(|b| c < b) => Some(c),
+                    _ => held,
+                };
+            }
+            let fresh = best_over(m, &sol, &cost, &empty, u, &mut scratch);
+            let node_best = match (best[i], fresh) {
+                (Some(b), Some(f)) if f.0 < b.0 => Some(f),
+                (Some(b), _) => Some(b),
+                (None, f) => f,
+            };
+            if let Some(c) = node_best
+                && pick.is_none_or(|(p, _): (Insertion, usize)| c.0 < p.0)
+            {
+                pick = Some((c, i));
+            }
+        }
 
         // The one empty candidate may be forbidden for every remaining node
         // while another empty vehicle is not. That is the only way a narrow
         // scan can miss a feasible insertion, so only then widen it.
-        if best.is_none() && narrow.len() < nv {
+        let widened = pick.is_none() && cands.len() < nv;
+        if widened {
             let all: Vec<usize> = (0..nv).collect();
-            best = scan(&all);
+            for (i, &u) in unrouted.iter().enumerate() {
+                if let Some(c) = best_over(m, &sol, &cost, &all, u, &mut scratch)
+                    && pick.is_none_or(|(p, _): (Insertion, usize)| c.0 < p.0)
+                {
+                    pick = Some((c, i));
+                }
+            }
         }
 
-        let Some((delta, ui, v, pos)) = best else {
+        let Some(((delta, v, pos), ui)) = pick else {
             if let Some(n) = unrouted
                 .iter()
                 .find(|&&n| (0..nv).all(|v| m.vehicle(VehicleId(v as u32)).forbids(n)))
@@ -224,8 +301,16 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
             panic!("no feasible insertion left — fleet too small?");
         };
         let node = unrouted.swap_remove(ui);
+        best.swap_remove(ui);
+        dirty.swap_remove(ui);
         sol[v].insert(pos, node);
         cost[v] += delta;
+        changed = Some(v);
+
+        // Widening ranked entries against a vehicle set the narrow scan omits.
+        if widened {
+            dirty.iter_mut().for_each(|d| *d = true);
+        }
     }
     log(SearchEvent::FirstSolution {
         cost: cost.iter().sum(),
