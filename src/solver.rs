@@ -198,8 +198,7 @@ fn best_in_route(
     best
 }
 
-/// Cheapest feasible position for `u` across `vs`, in that order — ties go to
-/// the vehicle listed first, as one flat scan over `vs` would have left them.
+/// Cheapest feasible position for `u` across `vs`; ties go to the first `vs`.
 fn best_over(
     m: &Model,
     sol: &Routes,
@@ -229,26 +228,17 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
         .collect();
     let mut scratch = Vec::new();
 
-    // Each node's cheapest insertion among the routes already in use, parallel
-    // to `unrouted`. Rescanning every node against every route on every
-    // insertion is what made construction 89% of a 3000-node solve; one
-    // insertion only changes one route, so only the entries that named that
-    // route have to be recomputed.
-    //
-    // The empty candidates stay out of this cache. They are the cheap part —
-    // one position each — and an empty vehicle turns into a used route as soon
-    // as it is picked, which would otherwise invalidate every entry that named
-    // it, every time a route opens.
+    // Each node's cheapest insertion among the used routes, parallel to
+    // `unrouted`. Empty candidates stay out: they cost one position to price,
+    // and one becomes a used route on nearly every insertion.
     let mut best: Vec<Option<Insertion>> = vec![None; unrouted.len()];
     let mut dirty = vec![true; unrouted.len()];
     // The route the last insertion grew, the only one that can be stale.
     let mut changed: Option<usize> = None;
 
     while !unrouted.is_empty() {
-        // `candidate_vehicles` lists the used routes ascending and the empty
-        // ones last, and a used route never leaves that list nor changes its
-        // place in it. That fixed order is what lets a cached entry be
-        // compared against a new one without rescanning.
+        // `candidate_vehicles` keeps used routes in a fixed order, so a cached
+        // entry stays comparable with a fresh one.
         let cands = candidate_vehicles(m, &sol);
         let (used, empty): (Vec<usize>, Vec<usize>) =
             cands.iter().partition(|&&v| !sol[v].is_empty());
@@ -262,17 +252,13 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
             } else if let Some(t) = changed {
                 let held = best[i];
                 let fresh_t = best_in_route(m, &sol, &cost, t, u, &mut scratch);
+                // Every route but `t` was already worse and none of them
+                // moved, so only a `t` that got worse needs a full rescan.
                 best[i] = match (held, fresh_t) {
-                    // The grown route held this node's best. Every other route
-                    // was worse and none of them moved, so a position in it
-                    // that is no worse than before is still the best of all;
-                    // only a worse one is worth a full rescan.
                     (Some((d, v, _)), Some(c)) if v == t && c.0 <= d => Some(c),
                     (Some((_, v, _)), _) if v == t => {
                         best_over(m, &sol, &cost, &used, u, &mut scratch)
                     }
-                    // Ties keep the entry already held when it sits earlier in
-                    // `used`, which is the order a flat scan would have seen.
                     (_, Some(c)) if held.is_none_or(|b| c < b) => Some(c),
                     _ => held,
                 };
@@ -321,8 +307,7 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
         cost[v] += delta;
         changed = Some(v);
 
-        // A widened insertion ranked every entry against a vehicle set the
-        // narrow scan does not use.
+        // Widening ranked entries against a vehicle set the narrow scan omits.
         if widened {
             dirty.iter_mut().for_each(|d| *d = true);
         }
