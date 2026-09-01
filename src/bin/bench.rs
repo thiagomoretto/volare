@@ -8,13 +8,11 @@
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
 //!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
 //!
-//! `--restarts=N` solves N times from different randomized constructions and
-//! keeps the cheapest; `--rcl=K` is how wide each greedy draw is. Give every
-//! start the whole round budget. Splitting one budget across restarts loses,
-//! because a restart throws away the GLS penalties that aim the next descent:
-//! 8 starts of 40 rounds reach 6.01% where 1 start of 300 rounds reaches
-//! 5.52%. Four starts of 300 rounds reach 4.44%. One start stays the plain
-//! deterministic greedy, so baseline.csv keeps its meaning.
+//! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
+//! each draw. Give every start the whole round budget: splitting one loses
+//! (8x40 = 6.01%, 1x300 = 5.52%) because a restart wipes the GLS penalties,
+//! while 4x300 = 4.44%. One start stays the plain greedy, so baseline.csv
+//! keeps its meaning.
 //!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!
@@ -54,8 +52,7 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--gls=")?.parse().ok());
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
-    // `--restarts=8` runs 8 randomized constructions and keeps the cheapest
-    // solved result; `--rcl=K` is how wide each greedy draw is.
+    // N randomized solves, cheapest wins. `--rcl=K` is the draw width.
     let restarts: usize = args
         .iter()
         .find_map(|a| a.strip_prefix("--restarts=")?.parse().ok())
@@ -135,8 +132,7 @@ fn bench_reference(
 
         let started = Instant::now();
         let mut log = logger(log_search);
-        // One start stays the deterministic greedy, so a default run is the
-        // same number baseline.csv holds.
+        // restarts = 1 stays the deterministic greedy, matching baseline.csv.
         let mut winner: Option<(Cost, Cost, Routes)> = None;
         for start in 0..restarts {
             let construct = match restarts {
@@ -158,8 +154,7 @@ fn bench_reference(
             }
         }
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        // `ctor` is the winning start's construction, not the best of them:
-        // the column has to explain the solution on the same row.
+        // Winning start's ctor, not the best ctor: the row must agree.
         let (cost, ctor, sol) = winner.expect("restarts >= 1");
 
         assert!(
