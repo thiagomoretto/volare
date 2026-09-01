@@ -17,13 +17,13 @@ runner are included.
 
 ```toml
 [dependencies]
-volare = "0.1"
+volare = "0.2"
 ```
 
 Requires Rust 1.85 or later. To build from source:
 
 ```sh
-git clone git@github.com:thiagomoretto/volare.git
+git clone https://github.com/thiagomoretto/volare.git
 cd volare
 cargo build --release
 ```
