@@ -5,15 +5,15 @@ categories:
   - title: 'Breaking changes'
     labels: ['breaking']
   - title: 'Features'
-    labels: ['feature', 'enhancement']
+    labels: ['enhancement']
   - title: 'Bug fixes'
-    labels: ['fix', 'bug']
+    labels: ['bug']
   - title: 'Performance'
     labels: ['performance']
   - title: 'Documentation'
-    labels: ['docs']
+    labels: ['documentation']
   - title: 'Maintenance'
-    labels: ['chore', 'refactor', 'dependencies']
+    labels: ['chore', 'dependencies']
 
 change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
 change-title-escapes: '\<*_&'
@@ -22,26 +22,24 @@ version-resolver:
   major:
     labels: ['breaking']
   minor:
-    labels: ['feature', 'enhancement']
+    labels: ['enhancement']
   patch:
-    labels: ['fix', 'bug', 'performance', 'docs', 'chore', 'refactor', 'dependencies']
+    labels: ['bug', 'performance', 'documentation', 'chore', 'dependencies']
   default: patch
 
 autolabeler:
   - label: 'breaking'
     title: ['/^\w+(\(.+\))?!:/']
-  - label: 'feature'
+  - label: 'enhancement'
     title: ['/^feat(\(.+\))?!?:/']
-  - label: 'fix'
+  - label: 'bug'
     title: ['/^fix(\(.+\))?!?:/']
   - label: 'performance'
     title: ['/^perf(\(.+\))?!?:/']
-  - label: 'docs'
+  - label: 'documentation'
     title: ['/^docs(\(.+\))?!?:/']
-  - label: 'refactor'
-    title: ['/^(refactor|style)(\(.+\))?!?:/']
   - label: 'chore'
-    title: ['/^(chore|build|ci|test)(\(.+\))?!?:/']
+    title: ['/^(chore|build|ci|test|refactor|style)(\(.+\))?!?:/']
 
 template: |
   $CHANGES
