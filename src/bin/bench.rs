@@ -9,10 +9,9 @@
 //!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
 //!
 //! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
-//! each draw. Give every start the whole round budget: splitting one loses
-//! (8x40 = 6.01%, 1x300 = 5.52%) because a restart wipes the GLS penalties,
-//! while 4x300 = 4.44%. One start stays the plain greedy, so baseline.csv
-//! keeps its meaning.
+//! each draw. Restarts help the hill climb but not GLS: a restart wipes the
+//! penalties that aim the next descent, so rounds beat seeds at equal budget.
+//! One start stays the plain greedy, so baseline.csv keeps its meaning.
 //!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!
