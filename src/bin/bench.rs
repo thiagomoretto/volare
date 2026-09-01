@@ -7,6 +7,7 @@
 //!   cargo run --release --bin bench -- X-n101        # name filter
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
+//!   cargo run --release --bin bench -- --scenario=precede # ordering within a route
 //!
 //! A `--scenario` picks a model variant instead of the plain CVRP: a new
 //! constraint is a `*_model` transform plus a `check_*` arm, not a binary
@@ -46,8 +47,8 @@ fn main() {
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
 
     assert!(
-        scenario.is_none_or(|s| s == "forbid" || s == "drop" || s == "tw"),
-        "unknown --scenario (have: forbid, drop, tw)"
+        scenario.is_none_or(|s| matches!(s, "forbid" | "drop" | "tw" | "precede")),
+        "unknown --scenario (have: forbid, drop, tw, precede)"
     );
     assert!(
         !(write_baseline && scenario.is_some()),
@@ -174,6 +175,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "forbid" => forbid_model(&inst, b, &mut note),
             "drop" => drop_model(&inst, b, &mut note),
             "tw" => tw_model(&inst, b, &mut note),
+            "precede" => precede_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
         let sol = solve(&model, gls, &mut log);
@@ -190,6 +192,10 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "tw" => {
                 let waits = check_tw(&model, &sol, &inst.name);
                 note = format!("{note}~w{waits}");
+            }
+            "precede" => {
+                let bound = check_precede(&model, &sol, &inst.name);
+                note = format!("{note}->{bound}");
             }
             _ => unreachable!("gated in main"),
         }
@@ -264,6 +270,58 @@ fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
         }
     }
     *note = windowed.to_string();
+}
+
+/// Every sixth customer is ordered against its nearest neighbour, the node
+/// most likely to share its route. The one farther from the depot goes first,
+/// which is the order a cheap near-to-far route would not have picked, so the
+/// delta measures ordering that actually bites. Ranking by distance from the
+/// depot is a total order, so the pairs can never form a cycle.
+fn precede_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
+    let n = inst.coords.len() as u32;
+    let customers = || (0..n).map(NodeId).filter(|&j| j != inst.depot);
+    let rank = |x: NodeId| (inst.dist(inst.depot, x), x.0);
+    let mut pairs = 0;
+    for c in customers().filter(|c| c.0 % 6 == 0) {
+        let Some(near) = customers()
+            .filter(|&j| j != c)
+            .min_by_key(|&j| (inst.dist(c, j), j.0))
+        else {
+            continue;
+        };
+        let (first, then) = if rank(c) >= rank(near) {
+            (c, near)
+        } else {
+            (near, c)
+        };
+        b.precede(first, then);
+        pairs += 1;
+    }
+    *note = pairs.to_string();
+}
+
+/// Assert no route serves a successor ahead of its predecessor. Returns the
+/// number of pairs that ended up on one route, the ones the constraint could
+/// bind at all.
+fn check_precede(model: &Model, sol: &Solution, name: &str) -> usize {
+    let mut bound = 0;
+    for (v, route) in sol.routes.iter().enumerate() {
+        if model.unserved_vehicle() == Some(VehicleId(v as u32)) {
+            continue;
+        }
+        for (i, &node) in route.iter().enumerate() {
+            for s in model.successors(node) {
+                assert!(
+                    !route[..i].contains(s),
+                    "{name}: vehicle {v} serves node {} before node {}",
+                    s.index(),
+                    node.index()
+                );
+                bound += usize::from(route[i + 1..].contains(s));
+            }
+        }
+    }
+    bound
 }
 
 /// Re-walk every route on the time dimension and assert no late arrival.

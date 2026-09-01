@@ -64,6 +64,8 @@ pub struct Model {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     unserved: Option<VehicleId>,
+    /// Successors by node, empty for a model that declared no ordering.
+    precedence: Vec<Vec<NodeId>>,
 }
 
 impl Model {
@@ -85,6 +87,19 @@ impl Model {
     #[inline]
     pub fn dimensions(&self) -> &[Dimension] {
         &self.dimensions
+    }
+
+    /// The gate in `eval_route`: a model without ordering pays one
+    /// `is_empty` per call and never walks the route twice.
+    #[inline]
+    pub fn has_precedence(&self) -> bool {
+        !self.precedence.is_empty()
+    }
+
+    /// Nodes that must be served after `n` when a route holds both.
+    #[inline]
+    pub fn successors(&self, n: NodeId) -> &[NodeId] {
+        self.precedence.get(n.index()).map_or(&[], Vec::as_slice)
     }
 
     #[inline]
@@ -111,6 +126,7 @@ pub struct ModelBuilder {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     drops: Vec<(NodeId, Cost)>,
+    precedence: Vec<Vec<NodeId>>,
 }
 
 impl ModelBuilder {
@@ -192,6 +208,29 @@ impl ModelBuilder {
         self.drops.push((n, penalty));
     }
 
+    /// Serve `before` ahead of `after` on any route that holds both.
+    ///
+    /// Ordering only: a pair split across two vehicles is unconstrained.
+    /// Pinning both to one vehicle is a separate constraint, and the two
+    /// together are what a pickup-and-delivery pair needs.
+    ///
+    /// Cycles are legal — `a` before `b` before `a` just means the two never
+    /// share a route — so nothing is checked for one here.
+    pub fn precede(&mut self, before: NodeId, after: NodeId) {
+        assert!(
+            before.index() < self.node_count && after.index() < self.node_count,
+            "precedence node out of range"
+        );
+        assert!(before != after, "node {} cannot precede itself", before.0);
+        if self.precedence.is_empty() {
+            self.precedence = vec![Vec::new(); self.node_count];
+        }
+        let succ = &mut self.precedence[before.index()];
+        if !succ.contains(&after) {
+            succ.push(after);
+        }
+    }
+
     pub fn build(mut self) -> Model {
         assert!(!self.vehicles.is_empty(), "model has no vehicles");
 
@@ -225,6 +264,21 @@ impl ModelBuilder {
             Some(id)
         };
 
+        // A terminal never appears in a route, so ordering against one can
+        // never fire. Silently vacuous is the worse failure.
+        for (i, succ) in self.precedence.iter().enumerate() {
+            if succ.is_empty() {
+                continue;
+            }
+            for &n in std::iter::once(&NodeId(i as u32)).chain(succ) {
+                assert!(
+                    !self.vehicles.iter().any(|v| v.start == n || v.end == n),
+                    "precedence on node {} is vacuous: it is a vehicle terminal",
+                    n.0
+                );
+            }
+        }
+
         for d in &self.dimensions {
             assert_eq!(
                 d.max_cumul.len(),
@@ -241,6 +295,7 @@ impl ModelBuilder {
             dimensions: self.dimensions,
             vehicles: self.vehicles,
             unserved,
+            precedence: self.precedence,
         }
     }
 }
