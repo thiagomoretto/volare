@@ -8,7 +8,6 @@ repository = "https://github.com/thiagomoretto/volare"
 readme = "README.md"
 keywords = ["cvrp", "vrp", "routing", "optimization", "solver"]
 categories = ["algorithms", "science"]
-# Benchmark data, 1.3M of it. Only the repo needs it, not the published crate.
 exclude = ["instances", "baseline.csv"]
 
 [dependencies]

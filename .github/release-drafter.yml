@@ -27,7 +27,6 @@ version-resolver:
     labels: ['fix', 'bug', 'performance', 'docs', 'chore', 'refactor', 'dependencies']
   default: patch
 
-# Labels come from the PR title, so no manual labelling is needed.
 autolabeler:
   - label: 'breaking'
     title: ['/^\w+(\(.+\))?!:/']
