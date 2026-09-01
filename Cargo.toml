@@ -8,5 +8,6 @@ repository = "https://github.com/thiagomoretto/volare"
 readme = "README.md"
 keywords = ["cvrp", "vrp", "routing", "optimization", "solver"]
 categories = ["algorithms", "science"]
+exclude = ["instances", "baseline.csv"]
 
 [dependencies]
