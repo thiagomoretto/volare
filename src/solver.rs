@@ -349,6 +349,14 @@ where
     // into them. Re-sweep everything until a whole sweep finds nothing.
     loop {
         let mut queue: VecDeque<NodeId> = sol.iter().flatten().copied().collect();
+        // node -> route, rebuilt per sweep; a move re-stamps only the routes
+        // it touched. Replaces an O(n) route scan per queue pop.
+        let mut index = vec![u32::MAX; m.node_count()];
+        for (r, route) in sol.iter().enumerate() {
+            for &n in route {
+                index[n.index()] = r as u32;
+            }
+        }
         queued.iter_mut().for_each(|q| *q = false);
         for &n in &queue {
             queued[n.index()] = true;
@@ -357,9 +365,9 @@ where
 
         while let Some(u) = queue.pop_front() {
             queued[u.index()] = false;
-            let Some(r) = sol.iter().position(|route| route.contains(&u)) else {
-                continue;
-            };
+            // Every queued node is in exactly one route, so this never sees
+            // the u32::MAX sentinel.
+            let r = index[u.index()] as usize;
 
             // Cheapest operator first: relocate and swap each cost O(n) route
             // evaluations, 2-opt costs O(n^2).
@@ -378,6 +386,7 @@ where
             });
             for t in touched {
                 for &n in &sol[t] {
+                    index[n.index()] = t as u32;
                     if !queued[n.index()] {
                         queued[n.index()] = true;
                         queue.push_back(n);
