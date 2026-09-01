@@ -83,6 +83,15 @@ pub fn search_log() -> impl FnMut(SearchEvent) {
 /// How the first solution is built.
 pub enum Construct {
     CheapestInsertion,
+    /// Cheapest insertion with the greedy step randomized: every insertion is
+    /// drawn uniformly from the `k` cheapest on offer. The same `seed` gives
+    /// the same solution, and `k = 1` is `CheapestInsertion` exactly. Meant
+    /// for multi-start: one model backs any number of concurrent solves, so
+    /// run a few seeds and keep the cheapest.
+    GreedyRandomized {
+        seed: u64,
+        k: usize,
+    },
 }
 
 /// How that solution is then made cheaper.
@@ -169,6 +178,7 @@ pub fn first_solution_with(
 ) -> Routes {
     match construct {
         Construct::CheapestInsertion => cheapest_insertion(m, log),
+        Construct::GreedyRandomized { seed, k } => greedy_randomized(m, seed, k, log),
     }
 }
 
@@ -218,8 +228,48 @@ fn best_over(
     best
 }
 
-pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes {
+/// SplitMix64. Not cryptographic and not meant to be: it exists so a seed
+/// reproduces a solution exactly, without the crate taking a dependency.
+struct Rng(u64);
+
+impl Rng {
+    #[inline]
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform over `0..n`. The modulo bias is under 2^-55 for any `n` a
+    /// candidate list can reach, so rejection sampling would buy nothing.
+    #[inline]
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// Greedy insertion: every step takes the cheapest insertion on offer.
+pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
+    insertion(m, 1, 0, log)
+}
+
+/// The same insertion with the greedy step randomized: each step draws
+/// uniformly from the `k` cheapest insertions instead of always taking the
+/// first of them. The point is not a better first solution — it is a
+/// *different* one per seed, so a caller can run several solves and keep the
+/// cheapest. `k = 1` is `cheapest_insertion`, same solution, same tie-breaks.
+pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
+    insertion(m, k.max(1), seed, log)
+}
+
+/// Insertion with a restricted candidate list of width `k`. The cache below
+/// is indifferent to the draw: it tracks which *route* the last insertion
+/// changed, and a randomized pick still grows exactly one route per step.
+fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
+    let mut rng = Rng(seed);
     let mut sol: Routes = vec![Vec::new(); nv];
     let mut cost = vec![0 as Cost; nv];
     let mut unrouted: Vec<NodeId> = (0..m.node_count() as u32)
@@ -235,6 +285,9 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
     let mut dirty = vec![true; unrouted.len()];
     // The route the last insertion grew, the only one that can be stale.
     let mut changed: Option<usize> = None;
+    // Every node's best insertion this round: the list the pick is drawn
+    // from. Hoisted so all rounds share one allocation.
+    let mut ranked: Vec<(Insertion, usize)> = Vec::new();
 
     while !unrouted.is_empty() {
         // `candidate_vehicles` keeps used routes in a fixed order, so a cached
@@ -243,7 +296,7 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
         let (used, empty): (Vec<usize>, Vec<usize>) =
             cands.iter().partition(|&&v| !sol[v].is_empty());
 
-        let mut pick: Option<(Insertion, usize)> = None;
+        ranked.clear();
         for i in 0..unrouted.len() {
             let u = unrouted[i];
             if dirty[i] {
@@ -269,29 +322,25 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
                 (Some(b), _) => Some(b),
                 (None, f) => f,
             };
-            if let Some(c) = node_best
-                && pick.is_none_or(|(p, _): (Insertion, usize)| c.0 < p.0)
-            {
-                pick = Some((c, i));
+            if let Some(c) = node_best {
+                ranked.push((c, i));
             }
         }
 
         // The one empty candidate may be forbidden for every remaining node
         // while another empty vehicle is not. That is the only way a narrow
         // scan can miss a feasible insertion, so only then widen it.
-        let widened = pick.is_none() && cands.len() < nv;
+        let widened = ranked.is_empty() && cands.len() < nv;
         if widened {
             let all: Vec<usize> = (0..nv).collect();
             for (i, &u) in unrouted.iter().enumerate() {
-                if let Some(c) = best_over(m, &sol, &cost, &all, u, &mut scratch)
-                    && pick.is_none_or(|(p, _): (Insertion, usize)| c.0 < p.0)
-                {
-                    pick = Some((c, i));
+                if let Some(c) = best_over(m, &sol, &cost, &all, u, &mut scratch) {
+                    ranked.push((c, i));
                 }
             }
         }
 
-        let Some(((delta, v, pos), ui)) = pick else {
+        if ranked.is_empty() {
             if let Some(n) = unrouted
                 .iter()
                 .find(|&&n| (0..nv).all(|v| m.vehicle(VehicleId(v as u32)).forbids(n)))
@@ -299,7 +348,14 @@ pub fn cheapest_insertion(m: &Model, mut log: impl FnMut(SearchEvent)) -> Routes
                 panic!("node {} is unroutable: forbidden on every vehicle", n.0);
             }
             panic!("no feasible insertion left — fleet too small?");
-        };
+        }
+
+        // One entry per unrouted node, so `(delta, i)` is a strict total order
+        // and the sort is one fixed permutation. At `k = 1` that makes the
+        // draw the same cheapest insertion, with the same tie-break, the plain
+        // greedy took.
+        ranked.sort_unstable_by_key(|&((delta, ..), i)| (delta, i));
+        let ((delta, v, pos), ui) = ranked[rng.below(k.min(ranked.len()))];
         let node = unrouted.swap_remove(ui);
         best.swap_remove(ui);
         dirty.swap_remove(ui);
@@ -868,6 +924,69 @@ mod tests {
             vec![3, 3],
         );
         b.build()
+    }
+
+    /// The three properties the randomized draw has to hold: `k = 1` is the
+    /// plain greedy, a seed reproduces its solution, and some seed actually
+    /// lands somewhere else. Without the third one the operator is a no-op
+    /// and multi-start has nothing to search.
+    #[test]
+    fn randomized_insertion_is_seeded_not_arbitrary() {
+        let m = line_model();
+        let greedy = cheapest_insertion(&m, |_| {});
+
+        assert_eq!(
+            greedy_randomized(&m, 7, 1, |_| {}),
+            greedy,
+            "k = 1 is greedy"
+        );
+        assert_eq!(
+            greedy_randomized(&m, 7, 3, |_| {}),
+            greedy_randomized(&m, 7, 3, |_| {}),
+            "same seed, same solution"
+        );
+
+        let mut diverged = 0;
+        for seed in 0..32 {
+            let sol = greedy_randomized(&m, seed, 3, |_| {});
+            assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
+            assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
+            if sol != greedy {
+                diverged += 1;
+            }
+        }
+        assert!(diverged > 0, "32 seeds all returned the greedy solution");
+    }
+
+    /// The drop sink and a forbid set are candidate vehicles like any other,
+    /// so a randomized draw has to respect them exactly as the greedy does.
+    /// Every insertion still prices through `eval_route`; only the order the
+    /// nodes go in is random.
+    #[test]
+    fn randomized_insertion_respects_drops_and_forbids() {
+        let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+        let mut b = ModelBuilder::new(6);
+        let cost = b.cost_class(dist);
+        let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+        b.vehicle(NodeId(0), NodeId(0), cost);
+        b.forbid(v0, NodeId(1));
+        b.dimension(
+            "load",
+            |_from, to| if to == NodeId(0) { 0 } else { 1 },
+            vec![3, 3],
+        );
+        b.allow_drop(NodeId(5), 15);
+        let m = b.build();
+
+        for seed in 0..16 {
+            let sol = greedy_randomized(&m, seed, 4, |_| {});
+            assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
+            assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
+            assert!(
+                !sol[v0.index()].contains(&NodeId(1)),
+                "seed {seed} put node 1 on the vehicle that forbids it"
+            );
+        }
     }
 
     /// A node cheaper to drop than to serve pays its penalty instead.
