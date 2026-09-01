@@ -253,7 +253,7 @@ pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
 /// Draws from the `k` cheapest. Not a better first solution, a different one
 /// per seed, so callers can race several and keep the cheapest.
 pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
-    insertion(m, k.max(1), seed, log)
+    insertion(m, k, seed, log)
 }
 
 /// Insertion with a candidate list of width `k`. The cache below is
@@ -340,10 +340,12 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
             panic!("no feasible insertion left — fleet too small?");
         }
 
-        // Unique `i` per entry makes `(delta, i)` total, so `k = 1` draws the
-        // old scan's pick, same tie-break.
-        ranked.sort_unstable_by_key(|&((delta, ..), i)| (delta, i));
-        let ((delta, v, pos), ui) = ranked[rng.below(k.min(ranked.len()))];
+        // Unique `i` per entry makes `(delta, i)` total, so the j-th smallest
+        // is unique: selecting beats sorting and `k = 1` still draws the old
+        // scan's pick. Draw before selecting, the rank is what we select on.
+        let j = rng.below(k.clamp(1, ranked.len()));
+        ranked.select_nth_unstable_by_key(j, |&((delta, ..), i)| (delta, i));
+        let ((delta, v, pos), ui) = ranked[j];
         let node = unrouted.swap_remove(ui);
         best.swap_remove(ui);
         dirty.swap_remove(ui);
