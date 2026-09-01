@@ -83,11 +83,8 @@ pub fn search_log() -> impl FnMut(SearchEvent) {
 /// How the first solution is built.
 pub enum Construct {
     CheapestInsertion,
-    /// Cheapest insertion with the greedy step randomized: every insertion is
-    /// drawn uniformly from the `k` cheapest on offer. The same `seed` gives
-    /// the same solution, and `k = 1` is `CheapestInsertion` exactly. Meant
-    /// for multi-start: one model backs any number of concurrent solves, so
-    /// run a few seeds and keep the cheapest.
+    /// Each step draws from the `k` cheapest, not the first. Same seed, same
+    /// solution. `k = 1` is `CheapestInsertion`.
     GreedyRandomized {
         seed: u64,
         k: usize,
@@ -228,8 +225,7 @@ fn best_over(
     best
 }
 
-/// SplitMix64. Not cryptographic and not meant to be: it exists so a seed
-/// reproduces a solution exactly, without the crate taking a dependency.
+/// SplitMix64. Not cryptographic. Seeds reproduce solutions, no dependency.
 struct Rng(u64);
 
 impl Rng {
@@ -242,31 +238,26 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// Uniform over `0..n`. The modulo bias is under 2^-55 for any `n` a
-    /// candidate list can reach, so rejection sampling would buy nothing.
+    /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
     #[inline]
     fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 }
 
-/// Greedy insertion: every step takes the cheapest insertion on offer.
+/// Always the cheapest insertion on offer.
 pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
     insertion(m, 1, 0, log)
 }
 
-/// The same insertion with the greedy step randomized: each step draws
-/// uniformly from the `k` cheapest insertions instead of always taking the
-/// first of them. The point is not a better first solution — it is a
-/// *different* one per seed, so a caller can run several solves and keep the
-/// cheapest. `k = 1` is `cheapest_insertion`, same solution, same tie-breaks.
+/// Draws from the `k` cheapest. Not a better first solution, a different one
+/// per seed, so callers can race several and keep the cheapest.
 pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
     insertion(m, k.max(1), seed, log)
 }
 
-/// Insertion with a restricted candidate list of width `k`. The cache below
-/// is indifferent to the draw: it tracks which *route* the last insertion
-/// changed, and a randomized pick still grows exactly one route per step.
+/// Insertion with a candidate list of width `k`. The cache below is
+/// indifferent to the draw: one route still grows per step.
 fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
     let mut rng = Rng(seed);
@@ -285,8 +276,7 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
     let mut dirty = vec![true; unrouted.len()];
     // The route the last insertion grew, the only one that can be stale.
     let mut changed: Option<usize> = None;
-    // Every node's best insertion this round: the list the pick is drawn
-    // from. Hoisted so all rounds share one allocation.
+    // Each node's best this round, the draw picks from here. Reused.
     let mut ranked: Vec<(Insertion, usize)> = Vec::new();
 
     while !unrouted.is_empty() {
@@ -350,10 +340,8 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
             panic!("no feasible insertion left — fleet too small?");
         }
 
-        // One entry per unrouted node, so `(delta, i)` is a strict total order
-        // and the sort is one fixed permutation. At `k = 1` that makes the
-        // draw the same cheapest insertion, with the same tie-break, the plain
-        // greedy took.
+        // Unique `i` per entry makes `(delta, i)` total, so `k = 1` draws the
+        // old scan's pick, same tie-break.
         ranked.sort_unstable_by_key(|&((delta, ..), i)| (delta, i));
         let ((delta, v, pos), ui) = ranked[rng.below(k.min(ranked.len()))];
         let node = unrouted.swap_remove(ui);
@@ -926,10 +914,8 @@ mod tests {
         b.build()
     }
 
-    /// The three properties the randomized draw has to hold: `k = 1` is the
-    /// plain greedy, a seed reproduces its solution, and some seed actually
-    /// lands somewhere else. Without the third one the operator is a no-op
-    /// and multi-start has nothing to search.
+    /// `k = 1` is greedy, seeds reproduce, some seed diverges. Without the
+    /// last, the draw is a no-op and multi-start has nothing to search.
     #[test]
     fn randomized_insertion_is_seeded_not_arbitrary() {
         let m = line_model();
@@ -958,10 +944,8 @@ mod tests {
         assert!(diverged > 0, "32 seeds all returned the greedy solution");
     }
 
-    /// The drop sink and a forbid set are candidate vehicles like any other,
-    /// so a randomized draw has to respect them exactly as the greedy does.
-    /// Every insertion still prices through `eval_route`; only the order the
-    /// nodes go in is random.
+    /// Forbids and the drop sink are ordinary candidates. Order is random,
+    /// feasibility is not.
     #[test]
     fn randomized_insertion_respects_drops_and_forbids() {
         let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
