@@ -1,0 +1,50 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: 'Breaking changes'
+    labels: ['breaking']
+  - title: 'Features'
+    labels: ['feature', 'enhancement']
+  - title: 'Bug fixes'
+    labels: ['fix', 'bug']
+  - title: 'Performance'
+    labels: ['performance']
+  - title: 'Documentation'
+    labels: ['docs']
+  - title: 'Maintenance'
+    labels: ['chore', 'refactor', 'dependencies']
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-title-escapes: '\<*_&'
+
+version-resolver:
+  major:
+    labels: ['breaking']
+  minor:
+    labels: ['feature', 'enhancement']
+  patch:
+    labels: ['fix', 'bug', 'performance', 'docs', 'chore', 'refactor', 'dependencies']
+  default: patch
+
+# Labels come from the PR title, so no manual labelling is needed.
+autolabeler:
+  - label: 'breaking'
+    title: ['/^\w+(\(.+\))?!:/']
+  - label: 'feature'
+    title: ['/^feat(\(.+\))?!?:/']
+  - label: 'fix'
+    title: ['/^fix(\(.+\))?!?:/']
+  - label: 'performance'
+    title: ['/^perf(\(.+\))?!?:/']
+  - label: 'docs'
+    title: ['/^docs(\(.+\))?!?:/']
+  - label: 'refactor'
+    title: ['/^(refactor|style)(\(.+\))?!?:/']
+  - label: 'chore'
+    title: ['/^(chore|build|ci|test)(\(.+\))?!?:/']
+
+template: |
+  $CHANGES
+
+  **Full changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
