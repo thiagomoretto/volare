@@ -28,13 +28,13 @@ use std::time::Instant;
 
 use volare::Construct;
 use volare::cvrplib::{Instance, cvrp_model, cvrp_model_with, parse_sol};
-use volare::eval::{Routes, eval_route, eval_routes, visits_all_nodes};
+use volare::eval::{eval_route, eval_routes, visits_all_nodes};
 use volare::model::{Model, ModelBuilder};
 use volare::solver::{
     Improve, SearchEvent, Solution, first_solution_with, guided_local_search_with,
     local_search_with, search_log, solve_with,
 };
-use volare::types::{Cost, NodeId, VehicleId};
+use volare::types::{NodeId, VehicleId};
 
 /// A gap that worsens by more than this against baseline.csv fails the run.
 const REGRESSION_TOLERANCE: f64 = 2.0;
@@ -132,30 +132,27 @@ fn bench_reference(
 
         let started = Instant::now();
         let mut log = logger(log_search);
-        // restarts = 1 stays the deterministic greedy, matching baseline.csv.
-        let mut winner: Option<(Cost, Cost, Routes)> = None;
-        for start in 0..restarts {
-            let construct = match restarts {
-                1 => Construct::CheapestInsertion,
-                _ => Construct::GreedyRandomized {
+        // k = 1 is cheapest insertion, so one start reproduces baseline.csv.
+        // `min_by_key` keeps the first minimum, so ctor is the winner's own.
+        let (cost, ctor, sol) = (0..restarts)
+            .map(|start| {
+                let construct = Construct::GreedyRandomized {
                     seed: start as u64,
-                    k: rcl,
-                },
-            };
-            let mut sol = first_solution_with(&model, construct, &mut log);
-            let ctor = eval_routes(&model, &sol).expect("infeasible construction");
-            match gls {
-                Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
-                None => local_search_with(&model, &mut sol, &mut log),
-            }
-            let cost = eval_routes(&model, &sol).expect("solver returned an infeasible solution");
-            if winner.as_ref().is_none_or(|w| cost < w.0) {
-                winner = Some((cost, ctor, sol));
-            }
-        }
+                    k: if restarts == 1 { 1 } else { rcl },
+                };
+                let mut sol = first_solution_with(&model, construct, &mut log);
+                let ctor = eval_routes(&model, &sol).expect("infeasible construction");
+                match gls {
+                    Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
+                    None => local_search_with(&model, &mut sol, &mut log),
+                }
+                let cost =
+                    eval_routes(&model, &sol).expect("solver returned an infeasible solution");
+                (cost, ctor, sol)
+            })
+            .min_by_key(|&(cost, ..)| cost)
+            .expect("restarts >= 1");
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        // Winning start's ctor, not the best ctor: the row must agree.
-        let (cost, ctor, sol) = winner.expect("restarts >= 1");
 
         assert!(
             visits_all_nodes(&model, &sol),
