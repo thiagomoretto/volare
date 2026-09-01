@@ -2,14 +2,16 @@
 
 [![CI](https://github.com/thiagomoretto/volare/actions/workflows/ci.yml/badge.svg)](https://github.com/thiagomoretto/volare/actions/workflows/ci.yml)
 
-Capacitated vehicle routing solver in Rust, with no dependencies.
+Vehicle routing solver in Rust, with no dependencies.
 
-Describe a fleet, a set of stops and a capacity per vehicle. volare builds a
-first solution with cheapest insertion, then improves it with local search. A
-CVRPLIB reader and a benchmark runner are included.
+Describe a fleet, a set of stops and the limits each vehicle has to respect.
+volare builds a first solution with cheapest insertion, then improves it with
+local search. Readers for CVRPLIB and Solomon VRPTW files and a benchmark
+runner are included.
 
-> Early days. Plain CVRP works today. No time windows, pickup and delivery or
-> multi depot yet.
+> Early days. CVRP, hard time windows, optional nodes and per-vehicle node
+> exclusion work today. No soft windows, pickup and delivery or multi depot
+> yet.
 
 ## Install
 
@@ -62,6 +64,38 @@ search progress. `search_log()` is a ready made one that prints to stderr.
 
 Full API docs with `cargo doc --open`.
 
+## Constraints
+
+A dimension is a quantity that accumulates along a route: load, time,
+distance. `max_cumul` bounds it per vehicle. `cumul_bounds` bounds it per
+node, which is what makes a time window.
+
+```rust
+// Time: travel on the arc plus service at the node we leave. No vehicle
+// limit, so the windows do all the work.
+b.dimension("time", move |from, to| travel(from, to) + service(from), vec![i64::MAX; 2]);
+
+// Hard window at node 3. Arriving after 90 is infeasible; arriving before
+// 30 makes the vehicle wait until 30.
+b.cumul_bounds("time", NodeId(3), 30, 90);
+
+// Vehicle 0 may not serve node 4: no permit, no cold chain, whatever the
+// reason. Construction panics if a node ends up forbidden on every vehicle.
+b.forbid(VehicleId(0), NodeId(4));
+
+// Node 5 may be left unserved, for 500 added to the total cost. Nodes you
+// do not declare stay mandatory.
+b.allow_drop(NodeId(5), 500);
+```
+
+After the solve, `sol.unserved(&model)` lists the dropped nodes. Their
+penalties are already inside `sol.cost`.
+
+The two upper bounds are not the same test. `cumul_bounds` checks the arrival
+*before* any wait; `max_cumul` checks it *after*. So waiting counts against
+the vehicle's endurance but never against the node's window, and neither
+bound expresses the other.
+
 ## What is in the box
 
 | | |
@@ -69,26 +103,39 @@ Full API docs with `cargo doc --open`.
 | Construction | cheapest insertion |
 | Improvement | hill climb, or guided local search on top of it |
 | Operators | relocate, swap, 2-opt, 2-opt* |
-| Input | CVRPLIB files with the `EUC_2D` metric |
+| Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
+| Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
 
 ## Benchmarks
 
 Mean gap against the best known cost across the 43 CVRPLIB X instances with n up
-to 300, measured at commit `2836fcb`:
+to 300, measured at commit `b0995dc`:
 
 | Strategy | Mean gap |
 | --- | --- |
 | cheapest insertion | 25.2% |
 | hill climb | 9.5% |
-| guided local search, 300 rounds | 5.4% |
+| guided local search, 300 rounds | 5.5% |
 
 ```sh
-cargo run --release --bin bench                 # hill climb, about 4 seconds
-cargo run --release --bin bench -- --gls=300    # about 3 minutes
+cargo run --release --bin bench -- X-n              # hill climb, about 2 seconds
+cargo run --release --bin bench -- X-n --gls=300    # about 3 minutes
 ```
 
-`baseline.csv` pins the hill climb gap for each instance, and the runner exits
+Drop the `X-n` filter and the run also takes in the five Belgium XL instances,
+3k to 11k nodes each, which is a much longer wait.
+
+`baseline.csv` pins the hill climb gap for each X instance, and the runner exits
 non-zero if any instance regresses by more than two points.
+
+`--scenario` swaps the plain CVRP for a constrained variant on the same
+instances and reports the cost delta against the unconstrained solve:
+
+```sh
+cargo run --release --bin bench -- X-n --scenario=forbid  # per-vehicle exclusions
+cargo run --release --bin bench -- X-n --scenario=drop    # optional nodes
+cargo run --release --bin bench -- X-n --scenario=tw      # hard time windows
+```
 
 ## Development
 
@@ -98,10 +145,11 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`tests/oracle.rs` re-evaluates every published best known solution and checks it
-reproduces the published cost. That catches the rounding and indexing mistakes
-that would otherwise surface as a gap percentage which looks plausible and means
-nothing.
+`tests/oracle.rs` and `tests/solomon_oracle.rs` re-evaluate every published best
+known solution, CVRP and VRPTW, and check each reproduces the published cost.
+That catches the rounding and indexing mistakes that would otherwise surface as
+a gap percentage which looks plausible and means nothing. For the VRPTW set it
+also pins the window semantics against someone else's answers.
 
 ## License
 
