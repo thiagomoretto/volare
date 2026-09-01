@@ -1,6 +1,5 @@
 name: Release
 
-# Publishing the drafted release creates the tag, which runs this workflow.
 on:
   push:
     tags: ['v*']

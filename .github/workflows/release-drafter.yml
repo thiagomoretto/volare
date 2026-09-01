@@ -3,8 +3,7 @@ name: Release Drafter
 on:
   push:
     branches: [main]
-  # Labels the PR from its title. pull_request_target gives write access to
-  # PRs from forks; safe here because no fork code is checked out or run.
+  # pull_request_target: write access for fork PRs. No fork code is run here.
   pull_request_target:
     types: [opened, reopened, synchronize]
 
