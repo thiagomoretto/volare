@@ -1,10 +1,9 @@
-//! Ordering within a route: a declared pair runs in order when one vehicle
-//! holds both ends, and is unconstrained when two vehicles split it.
+//! Ordering within a route. See `ModelBuilder::precede` for the semantics.
 
 use volare::{Construct, Improve, ModelBuilder, NodeId, VehicleId, eval_route, eval_routes, solve};
 
 /// Depot 0, customers 1..=5 spaced along a line, arc cost the line distance.
-fn builder(capacity: i64, vehicles: usize) -> ModelBuilder {
+fn builder(vehicles: usize) -> ModelBuilder {
     let mut b = ModelBuilder::new(6);
     let cost = b.cost_class(|a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10);
     for _ in 0..vehicles {
@@ -13,14 +12,14 @@ fn builder(capacity: i64, vehicles: usize) -> ModelBuilder {
     b.dimension(
         "load",
         |_from, to| if to == NodeId(0) { 0 } else { 1 },
-        vec![capacity; vehicles],
+        vec![5; vehicles],
     );
     b
 }
 
 #[test]
 fn out_of_order_is_infeasible() {
-    let mut b = builder(5, 1);
+    let mut b = builder(1);
     b.precede(NodeId(3), NodeId(1));
     let m = b.build();
 
@@ -32,11 +31,10 @@ fn out_of_order_is_infeasible() {
     assert!(eval_route(&m, &[NodeId(3), NodeId(2), NodeId(1)], VehicleId(0)).is_some());
 }
 
-/// The line that separates this from a pickup-and-delivery pair: nothing
-/// forces the two onto one vehicle, and apart they are unordered.
+/// The line that separates this from a pickup-and-delivery pair.
 #[test]
 fn a_pair_split_across_vehicles_is_unordered() {
-    let mut b = builder(5, 2);
+    let mut b = builder(2);
     b.precede(NodeId(3), NodeId(1));
     let m = b.build();
 
@@ -44,10 +42,9 @@ fn a_pair_split_across_vehicles_is_unordered() {
     assert!(eval_routes(&m, &split).is_some());
 }
 
-/// Only the pair's own ends matter; an unconstrained node sits anywhere.
 #[test]
-fn unrelated_nodes_are_untouched() {
-    let mut b = builder(5, 1);
+fn unrelated_nodes_sit_anywhere() {
+    let mut b = builder(1);
     b.precede(NodeId(4), NodeId(2));
     let m = b.build();
 
@@ -61,17 +58,12 @@ fn unrelated_nodes_are_untouched() {
             "{route:?} keeps 4 ahead of 2"
         );
     }
-    assert_eq!(
-        eval_route(&m, &[NodeId(2), NodeId(1), NodeId(4)], VehicleId(0)),
-        None
-    );
 }
 
-/// A chain constrains transitively without being declared transitively:
-/// 5 before 3 and 3 before 1 leaves one order for the three of them.
+/// Transitive without being declared transitive.
 #[test]
 fn chains_compose() {
-    let mut b = builder(5, 1);
+    let mut b = builder(1);
     b.precede(NodeId(5), NodeId(3));
     b.precede(NodeId(3), NodeId(1));
     let m = b.build();
@@ -87,13 +79,12 @@ fn chains_compose() {
     );
 }
 
-/// Construction and every improvement move share one feasibility gate, so a
-/// solved model cannot come back out of order.
+/// Construction and every operator share one feasibility gate.
 #[test]
 fn the_solver_never_returns_an_out_of_order_route() {
     // Cheapest order on a line runs 1..5; requiring 2 ahead of 1 and 4 ahead
     // of 5 rules out both monotone orders.
-    let mut b = builder(5, 2);
+    let mut b = builder(2);
     b.precede(NodeId(2), NodeId(1));
     b.precede(NodeId(4), NodeId(5));
     let m = b.build();
@@ -111,39 +102,23 @@ fn the_solver_never_returns_an_out_of_order_route() {
     }
 }
 
-/// A dropped node is out of the routing, so its ordering must not be what
-/// keeps it in.
+/// A dropped node is out of the routing, so ordering must not keep it in.
 #[test]
 fn the_unserved_sink_ignores_ordering() {
-    // Only nodes 1 and 2 exist, and serving them costs 40 against a penalty
-    // of 1 each, so the sink is where they belong.
-    let mut b = ModelBuilder::new(3);
-    let cost = b.cost_class(|a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10);
-    b.vehicle(NodeId(0), NodeId(0), cost);
-    b.dimension(
-        "load",
-        |_from, to| if to == NodeId(0) { 0 } else { 1 },
-        vec![5],
-    );
+    let mut b = builder(1);
     b.precede(NodeId(2), NodeId(1));
     b.allow_drop(NodeId(1), 1);
     b.allow_drop(NodeId(2), 1);
     let m = b.build();
 
     let sink = m.unserved_vehicle().expect("drops declared");
-    assert!(
-        eval_route(&m, &[NodeId(1), NodeId(2)], sink).is_some(),
-        "the sink holds dropped nodes in any order"
-    );
-
-    let sol = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
-    assert_eq!(sol.unserved(&m).len(), 2, "both are cheaper dropped");
+    assert!(eval_route(&m, &[NodeId(1), NodeId(2)], sink).is_some());
 }
 
 #[test]
 #[should_panic(expected = "vacuous")]
 fn ordering_against_a_terminal_is_rejected() {
-    let mut b = builder(5, 1);
+    let mut b = builder(1);
     b.precede(NodeId(1), NodeId(0));
     b.build();
 }

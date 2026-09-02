@@ -13,10 +13,8 @@
 use volare::{Construct, Improve, ModelBuilder, NodeId, solve};
 
 fn main() {
-    // A rear-door van: loaded once at the depot, unloaded from the back. The
-    // warehouse packs to a fixed order, so a pallet packed early sits deeper
-    // in the van than one packed late. Two pallets only block each other when
-    // they ride the same van, which is exactly what `precede` says.
+    // A rear-door van, loaded once and unloaded from the back. Two pallets
+    // only block each other when they ride the same van.
     let coords: [(f64, f64); 7] = [
         (0.0, 0.0),    // 0 depot
         (12.0, 3.0),   // 1
@@ -27,8 +25,7 @@ fn main() {
         (7.0, -13.0),  // 6
     ];
 
-    // Packed deep first. Stop 2's pallet went in before stop 1's, so on a van
-    // carrying both, stop 1 comes out first.
+    // Stop 2's pallet went in before stop 1's, so stop 1 comes out first.
     let blocked_by = [
         (NodeId(1), NodeId(2)),
         (NodeId(3), NodeId(4)),
@@ -67,38 +64,20 @@ fn main() {
     }
     println!("total cost: {}", sol.cost);
 
-    // The constraint is hard where it applies, and absent where it does not.
+    // Hard where it applies, absent where it does not.
     for (front, behind) in blocked_by {
-        let on = |n: NodeId| {
-            sol.routes
-                .iter()
-                .enumerate()
-                .find_map(|(v, r)| r.iter().position(|&x| x == n).map(|i| (v, i)))
-                .expect("every stop is served")
+        let (f, t) = (front.index(), behind.index());
+        let Some(route) = sol
+            .routes
+            .iter()
+            .find(|r| r.contains(&front) && r.contains(&behind))
+        else {
+            // Two vans, two loads: neither pallet is in the other's way.
+            println!("{f} and {t} went to different vans, unordered");
+            continue;
         };
-        let (van_front, at_front) = on(front);
-        let (van_behind, at_behind) = on(behind);
-
-        if van_front == van_behind {
-            assert!(
-                at_front < at_behind,
-                "{} is behind {} in van {van_front}",
-                front.index(),
-                behind.index()
-            );
-            println!(
-                "{} before {} on van {van_front}",
-                front.index(),
-                behind.index()
-            );
-        } else {
-            // Two vans, two separate loads: neither pallet is in the other's
-            // way, so the solver is free to order them however it likes.
-            println!(
-                "{} and {} went to different vans, unordered",
-                front.index(),
-                behind.index()
-            );
-        }
+        let at = |n: NodeId| route.iter().position(|&x| x == n).unwrap();
+        assert!(at(front) < at(behind), "{f} is behind {t}");
+        println!("{f} before {t} on the same van");
     }
 }

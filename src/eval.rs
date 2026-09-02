@@ -27,8 +27,7 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         return None;
     }
 
-    // The unserved sink skips both checks: a dropped node's window or its
-    // ordering must not make dropping it infeasible.
+    // A dropped node's window or ordering must not block dropping it.
     if m.unserved_vehicle() != Some(v) {
         if m.has_precedence() && !precedence_holds(m, route) {
             return None;
@@ -64,11 +63,7 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     Some(cost)
 }
 
-/// Every ordered pair the route holds both ends of runs `before` first.
-///
-/// One backward scan per declared successor. A node with no successors costs
-/// nothing, which is every node in a model that never called `precede`, and
-/// nearly every node in one that did.
+/// A node with no successors costs nothing, which is nearly every node.
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array
 // if dense pickup-and-delivery ever makes this the hot spot.
 fn precedence_holds(m: &Model, route: &[NodeId]) -> bool {

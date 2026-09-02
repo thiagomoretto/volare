@@ -272,23 +272,19 @@ fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = windowed.to_string();
 }
 
-/// Every sixth customer is ordered against its nearest neighbour, the node
-/// most likely to share its route. The one farther from the depot goes first,
-/// which is the order a cheap near-to-far route would not have picked, so the
-/// delta measures ordering that actually bites. Ranking by distance from the
-/// depot is a total order, so the pairs can never form a cycle.
+/// Every sixth customer is ordered against its nearest neighbour, farther
+/// from the depot first — the order a near-to-far route would not pick.
+/// Ranking by depot distance is a total order, so no pair can cycle.
 fn precede_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     let n = inst.coords.len() as u32;
     let customers = || (0..n).map(NodeId).filter(|&j| j != inst.depot);
     let rank = |x: NodeId| (inst.dist(inst.depot, x), x.0);
     let mut pairs = 0;
     for c in customers().filter(|c| c.0 % 6 == 0) {
-        let Some(near) = customers()
+        let near = customers()
             .filter(|&j| j != c)
             .min_by_key(|&j| (inst.dist(c, j), j.0))
-        else {
-            continue;
-        };
+            .expect("instance has two customers");
         let (first, then) = if rank(c) >= rank(near) {
             (c, near)
         } else {
@@ -300,9 +296,7 @@ fn precede_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     *note = pairs.to_string();
 }
 
-/// Assert no route serves a successor ahead of its predecessor. Returns the
-/// number of pairs that ended up on one route, the ones the constraint could
-/// bind at all.
+/// Returns the pairs that shared a route, the only ones the constraint binds.
 fn check_precede(model: &Model, sol: &Solution, name: &str) -> usize {
     let mut bound = 0;
     for (v, route) in sol.routes.iter().enumerate() {
