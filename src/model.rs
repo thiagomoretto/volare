@@ -88,7 +88,6 @@ impl Model {
         &self.dimensions
     }
 
-    /// Read on every `eval_route` call, so keep it a plain field test.
     #[inline]
     pub(crate) fn has_precedence(&self) -> bool {
         !self.precedence.is_empty()
@@ -278,7 +277,6 @@ impl ModelBuilder {
             precedence: self.precedence,
         };
 
-        // A terminal never appears in a route, so such a pair could never fire.
         for (i, succ) in model.precedence.iter().enumerate() {
             if succ.is_empty() {
                 continue;

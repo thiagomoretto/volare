@@ -737,8 +737,7 @@ where
             let w = sol[v][q];
             sol[r][at] = w;
             sol[v][q] = u;
-            // Not `zip`: that evaluates both routes even when `r` is already
-            // infeasible, which at tight capacity is most rejected swaps.
+            // Not `zip`: it evaluates route `v` even when `r` is infeasible.
             #[allow(clippy::manual_option_zip)]
             let new = eval(m, &sol[r], VehicleId(r as u32))
                 .and_then(|a| eval(m, &sol[v], VehicleId(v as u32)).map(|b| (a, b)));
