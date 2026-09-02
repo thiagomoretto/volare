@@ -14,7 +14,7 @@ pub enum Operator {
     Swap,
     TwoOpt,
     TwoOptStar,
-    /// One of the operators handed to [`local_search_with_operators`], by its
+    /// One of the operators handed to [`solve_with_operators`], by its
     /// position in that slice.
     Custom(usize),
 }
@@ -135,6 +135,36 @@ pub fn solve_with(
     m: &Model,
     construct: Construct,
     improve: Improve,
+    log: impl FnMut(SearchEvent),
+) -> Solution {
+    solve_with_operators(m, construct, improve, &mut [], log)
+}
+
+/// `solve_with`, plus operators of your own in every descent it runs.
+///
+/// Yours ride the node queue and the don't-look bits with the shipped four,
+/// rather than running in a pass around them: each is offered the node the
+/// descent just woke, and a move any of them accepts re-wakes the routes it
+/// touched. They are tried after relocate and swap and before 2-opt, so the
+/// cheap single-stop moves get first refusal and the O(n²) scan stays last.
+/// An accepted move reports as [`Operator::Custom`] carrying its index.
+///
+/// Both [`Improve`] modes take them, so guided local search offers your
+/// operator the same nodes the shipped four get, once per round.
+///
+/// Under guided local search the objective carries arc penalties, and
+/// [`Search`] applies them to everything it prices. An operator that compares
+/// `cx.eval` against the `cost` it was handed is therefore already minimizing
+/// the same thing the round is minimizing, with nothing to opt into.
+///
+/// Those rounds descend silently, though, so no [`Operator::Custom`] event
+/// escapes them — count accepted moves inside your own operator if you want
+/// them under `Improve::Gls`.
+pub fn solve_with_operators(
+    m: &Model,
+    construct: Construct,
+    improve: Improve,
+    operators: &mut [CustomOperator],
     mut log: impl FnMut(SearchEvent),
 ) -> Solution {
     // One context for the whole solve, so construction's buffers are the
@@ -142,8 +172,8 @@ pub fn solve_with(
     let mut cx = Search::new(m);
     let mut sol = first_solution_in(&mut cx, construct, &mut log);
     match improve {
-        Improve::HillClimb => descend(&mut cx, &mut sol, &mut [], &mut log),
-        Improve::Gls { iters } => guided_in(&mut cx, &mut sol, iters, &mut log),
+        Improve::HillClimb => descend(&mut cx, &mut sol, operators, &mut log),
+        Improve::Gls { iters } => guided_in(&mut cx, &mut sol, iters, operators, &mut log),
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
     Solution { routes: sol, cost }
@@ -405,24 +435,6 @@ pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEven
 pub type CustomOperator<'a> =
     &'a mut dyn FnMut(&mut Search, &mut Routes, &mut [Cost], NodeId, usize) -> Option<usize>;
 
-/// `local_search_with`, plus operators of your own in the same descent.
-///
-/// They ride the node queue and the don't-look bits with the shipped four,
-/// rather than running in a pass around them: each is offered the node the
-/// descent just woke, and a move any of them accepts re-wakes the routes it
-/// touched. They are tried after relocate and swap and before 2-opt, so the
-/// cheap single-stop moves get first refusal and the O(n²) scan stays last.
-///
-/// An accepted move reports as [`Operator::Custom`] carrying its index.
-pub fn local_search_with_operators(
-    m: &Model,
-    sol: &mut Routes,
-    operators: &mut [CustomOperator],
-    log: impl FnMut(SearchEvent),
-) {
-    descend(&mut Search::new(m), sol, operators, log)
-}
-
 /// The descent itself, on whatever objective `cx` currently carries. Public
 /// callers get true cost; only guided local search leaves penalties on it.
 fn descend(
@@ -584,12 +596,18 @@ pub fn guided_local_search_with(
     iters: usize,
     log: impl FnMut(SearchEvent),
 ) {
-    guided_in(&mut Search::new(m), sol, iters, log)
+    guided_in(&mut Search::new(m), sol, iters, &mut [], log)
 }
 
-fn guided_in(cx: &mut Search, sol: &mut Routes, iters: usize, mut log: impl FnMut(SearchEvent)) {
+fn guided_in(
+    cx: &mut Search,
+    sol: &mut Routes,
+    iters: usize,
+    operators: &mut [CustomOperator],
+    mut log: impl FnMut(SearchEvent),
+) {
     let m = cx.model();
-    descend(cx, sol, &mut [], |_| {});
+    descend(cx, sol, operators, |_| {});
 
     let mut best = sol.clone();
     let mut best_cost = eval_routes(m, sol).expect("infeasible local optimum");
@@ -613,7 +631,7 @@ fn guided_in(cx: &mut Search, sol: &mut Routes, iters: usize, mut log: impl FnMu
 
     for iter in 1..=iters {
         penalize_worst_arcs(cx, sol);
-        descend(cx, sol, &mut [], |_| {});
+        descend(cx, sol, operators, |_| {});
 
         // The descent just optimized penalized cost, which is not the cost we
         // rank solutions by. `eval_routes` is always the true one.

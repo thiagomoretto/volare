@@ -6,10 +6,11 @@
 //! on another route. volare ships a swap that trades one stop for one; two for
 //! two is a move it does not have.
 //!
-//! `local_search_with_operators` puts it in the rotation with volare's own
-//! four. It is not a pass wrapped around the solver — the operator rides the
-//! same node queue and the same don't-look bits as relocate, swap and 2-opt,
-//! and a move it accepts re-wakes the routes it touched, exactly as theirs do.
+//! `solve_with_operators` puts it in the rotation with volare's own four. It
+//! is not a pass wrapped around the solver — the operator rides the same node
+//! queue and the same don't-look bits as relocate, swap and 2-opt, and a move
+//! it accepts re-wakes the routes it touched, exactly as theirs do. Both
+//! strategies take it, as the two rows below show.
 //!
 //! The contract is two functions wide. [`Search`] prices routes:
 //!
@@ -28,41 +29,40 @@
 //! cargo run --release --example custom_operator
 //! ```
 
-use volare::eval::eval_routes;
-use volare::solver::{
-    Construct, Operator, SearchEvent, first_solution_with, local_search_with,
-    local_search_with_operators,
-};
-use volare::{Cost, ModelBuilder, NodeId, Routes, Search, VehicleId};
+use volare::solver::{Construct, Improve, solve_with, solve_with_operators};
+use volare::{Cost, Model, ModelBuilder, NodeId, Routes, Search, VehicleId};
 
 fn main() {
     let m = windowed_model();
-    let start = first_solution_with(&m, Construct::CheapestInsertion, |_| {});
+    println!(
+        "{:<16} {:>8} {:>12} {:>9}",
+        "", "shipped", "with yours", "trades"
+    );
+    report(&m, "hill climb", || Improve::HillClimb);
+    report(&m, "gls, 30 rounds", || Improve::Gls { iters: 30 });
+}
 
-    // What the shipped four reach on their own, to measure against.
-    let mut alone = start.clone();
-    local_search_with(&m, &mut alone, |_| {});
-    let alone_cost = eval_routes(&m, &alone).expect("local search is feasible");
+/// Solve twice on the same strategy — once with volare's four operators, once
+/// with ours added — and print the two costs side by side.
+fn report(m: &Model, label: &str, improve: impl Fn() -> Improve) {
+    let shipped = solve_with(m, Construct::CheapestInsertion, improve(), |_| {}).cost;
 
-    // The same descent with yours in the rotation.
-    let mut sol = start;
+    // Counted inside the operator, not from the event stream: guided local
+    // search runs its descents silent, so no per-move event escapes it.
     let mut trades = 0;
-    let mut mine = |cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], u, r| {
-        trade_pairs(cx, sol, cost, u, r)
+    let mut mine = |cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], u: NodeId, r: usize| {
+        let applied = trade_pairs(cx, sol, cost, u, r);
+        trades += usize::from(applied.is_some());
+        applied
     };
-    local_search_with_operators(&m, &mut sol, &mut [&mut mine], |e| {
-        if let SearchEvent::Improvement {
-            operator: Operator::Custom(_),
-            ..
-        } = e
-        {
-            trades += 1;
-        }
-    });
-
-    let together = eval_routes(&m, &sol).expect("the operator kept the solution feasible");
-    println!("shipped operators alone   {alone_cost}");
-    println!("with yours in the mix     {together}, after {trades} trades of its own");
+    let ours = solve_with_operators(
+        m,
+        Construct::CheapestInsertion,
+        improve(),
+        &mut [&mut mine],
+        |_| {},
+    );
+    println!("{label:<16} {shipped:>8} {:>12} {trades:>9}", ours.cost);
 }
 
 /// Trade the pair of stops starting at `u` for a pair on another route, first

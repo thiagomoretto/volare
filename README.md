@@ -144,7 +144,7 @@ around it:
 let mut mine = |cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], u, r| {
     // one improving change; return the other vehicle you touched
 };
-local_search_with_operators(&model, &mut routes, &mut [&mut mine], |_| {});
+solve_with_operators(&model, construct, improve, &mut [&mut mine], |_| {});
 ```
 
 It rides the same node queue and don't-look bits as relocate, swap and 2-opt,
@@ -152,10 +152,19 @@ and a move it accepts re-wakes the routes it touched. Leave `cost[v]` correct
 for anything you rewrote, and return `Some` only for a move you applied that
 made the solution cheaper.
 
+Both strategies take them. Under guided local search the objective carries arc
+penalties and `Search` applies them to everything it prices, so an operator
+comparing `cx.eval` against the `cost` it was handed is already minimizing what
+the round is minimizing.
+
 [`examples/custom_operator.rs`](examples/custom_operator.rs) is a whole one:
-trading a pair of stops between two routes, a move volare does not ship. On
-its instance it takes the solution the shipped operators settle on from 2240
-to 2061.
+trading a pair of stops between two routes, a move volare does not ship.
+
+```text
+                  shipped   with yours    trades
+hill climb           2240         2061         2
+gls, 30 rounds       2008         1885         4
+```
 
 ## Benchmarks
 
