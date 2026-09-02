@@ -27,9 +27,11 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         return None;
     }
 
-    // The unserved sink skips dimensions: a dropped node's window must not
-    // make dropping it infeasible.
+    // A dropped node's window or ordering must not block dropping it.
     if m.unserved_vehicle() != Some(v) {
+        if m.has_precedence() && !precedence_holds(m, route) {
+            return None;
+        }
         for d in m.dimensions() {
             let cap = d.max_cumul[v.index()];
             let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
@@ -59,6 +61,15 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         prev = node;
     }
     Some(cost)
+}
+
+// ponytail: linear `route[..i]` scan. Swap for a timestamped position array
+// if dense pickup-and-delivery ever makes this the hot spot.
+fn precedence_holds(m: &Model, route: &[NodeId]) -> bool {
+    route
+        .iter()
+        .enumerate()
+        .all(|(i, &n)| m.successors(n).iter().all(|s| !route[..i].contains(s)))
 }
 
 /// True cost of every route, or `None` if any is infeasible.

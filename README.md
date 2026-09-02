@@ -9,9 +9,9 @@ volare builds a first solution with cheapest insertion, then improves it with
 local search. Readers for CVRPLIB and Solomon VRPTW files and a benchmark
 runner are included.
 
-> Early days. CVRP, hard time windows, optional nodes and per-vehicle node
-> exclusion work today. No soft windows, pickup and delivery or multi depot
-> yet.
+> Early days. CVRP, hard time windows, optional nodes, per-vehicle node
+> exclusion and in-route ordering work today. No soft windows, pickup and
+> delivery or multi depot yet.
 
 ## Install
 

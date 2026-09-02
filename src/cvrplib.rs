@@ -3,8 +3,6 @@
 //! Coordinates live here and never enter the `Model`. The model internalizes
 //! no metric; geometry only enters as build-time closures.
 
-use std::sync::Arc;
-
 use crate::model::{Model, ModelBuilder};
 use crate::types::NodeId;
 
@@ -116,8 +114,7 @@ pub fn cvrp_model_with(
             matrix[i * n + j] = euc_2d(inst.coords[i], inst.coords[j]);
         }
     }
-    let matrix = Arc::new(matrix);
-    let demands = Arc::new(inst.demands.clone());
+    let demands = inst.demands.clone();
 
     let mut b = ModelBuilder::new(n);
     let cost_class = b.cost_class(move |from, to| matrix[from.index() * n + to.index()]);
