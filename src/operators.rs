@@ -11,33 +11,21 @@ use crate::search::Search;
 use crate::solver::candidate_vehicles;
 use crate::types::{Cost, NodeId, VehicleId};
 
-/// The buffers a move holds *across* an evaluation, which is exactly what
-/// [`Search`] cannot own: a slice borrowed out of it could not be handed back
-/// to a method taking `&mut self`.
-///
-/// One per descent, reused by every operator, so a move allocates nothing.
-#[derive(Default)]
-pub(crate) struct Scratch {
-    /// The source route with the moved stops lifted out.
-    without: Vec<NodeId>,
-    /// The stops being moved.
-    run: Vec<NodeId>,
-    /// Vehicles worth trying.
-    cands: Vec<usize>,
-}
-
 /// Move `u` out of route `r` to its first improving position anywhere,
 /// including back into `r`. Returns the receiving vehicle.
+///
+/// `without` and `cands` belong to the caller: both are held across an
+/// evaluation, which is exactly the buffer `Search` cannot own.
 pub(crate) fn try_relocate(
     cx: &mut Search,
     sol: &mut Routes,
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
-    scratch: &mut Scratch,
+    without: &mut Vec<NodeId>,
+    cands: &mut Vec<usize>,
 ) -> Option<usize> {
     let at = sol[r].iter().position(|&x| x == u)?;
-    let Scratch { without, cands, .. } = scratch;
     without.clear();
     without.extend_from_slice(&sol[r]);
     without.remove(at);
@@ -74,102 +62,6 @@ pub(crate) fn try_relocate(
     sol[v].extend_from_slice(cx.spliced());
     cost[v] = c;
     Some(v)
-}
-
-/// Longest run or-opt moves. Past three the neighborhood grows faster than it
-/// pays, and the runs that matter are the short spurs relocate cannot unpick.
-const MAX_RUN: usize = 3;
-
-/// Move the run of stops starting at `u` somewhere else, either way round.
-/// Returns the receiving vehicle.
-///
-/// Relocate carries one stop and 2-opt reverses within one route; neither can
-/// lift a short spur of consecutive stops off a route and hang it on another.
-/// That spur is what cheapest insertion leaves behind, so this is the operator
-/// that cleans up after it.
-///
-/// Runs start at two: a run of one *is* relocate, and re-testing it here would
-/// only buy a second copy of the same move.
-pub(crate) fn try_or_opt(
-    cx: &mut Search,
-    sol: &mut Routes,
-    cost: &mut [Cost],
-    u: NodeId,
-    r: usize,
-    scratch: &mut Scratch,
-) -> Option<usize> {
-    let at = sol[r].iter().position(|&x| x == u)?;
-    candidate_vehicles(cx.model(), sol, &mut scratch.cands);
-
-    for len in 2..=MAX_RUN.min(sol[r].len() - at) {
-        // Lift the run: the stretch replaced by nothing.
-        let Some(lifted) = cx.eval_splice(&sol[r], at..at + len, &[], VehicleId(r as u32)) else {
-            continue;
-        };
-        scratch.run.clear();
-        scratch.run.extend_from_slice(&sol[r][at..at + len]);
-        scratch.without.clear();
-        scratch.without.extend_from_slice(cx.spliced());
-
-        let Some((v, c)) = best_reinsertion(cx, sol, cost, r, lifted, scratch) else {
-            continue;
-        };
-        // `best_reinsertion` left the winning route in the context and ran no
-        // evaluation since, so it is still there.
-        if v != r {
-            sol[r].clone_from(&scratch.without);
-            cost[r] = lifted;
-        }
-        sol[v].clear();
-        sol[v].extend_from_slice(cx.spliced());
-        cost[v] = c;
-        return Some(v);
-    }
-    None
-}
-
-/// First position, on any candidate vehicle and either way round, that hangs
-/// `run` back on for less than leaving it where it was.
-///
-/// Probe only: `sol` stays borrowed shared, so nothing can be committed until
-/// the caller has dropped the base it was reading.
-fn best_reinsertion(
-    cx: &mut Search,
-    sol: &Routes,
-    cost: &[Cost],
-    r: usize,
-    lifted: Cost,
-    scratch: &mut Scratch,
-) -> Option<(usize, Cost)> {
-    let Scratch {
-        without,
-        run,
-        cands,
-    } = scratch;
-    for &v in cands.iter() {
-        let base: &[NodeId] = if v == r { without } else { &sol[v] };
-        // Both orientations. It also costs less than it looks: finding the
-        // improving move sooner ends the scan sooner.
-        for reversed in [false, true] {
-            if reversed {
-                run.reverse();
-            }
-            for pos in 0..=base.len() {
-                let Some(c) = cx.eval_splice(base, pos..pos, run, VehicleId(v as u32)) else {
-                    continue;
-                };
-                let delta = if v == r {
-                    c - cost[r]
-                } else {
-                    (lifted - cost[r]) + (c - cost[v])
-                };
-                if delta < 0 {
-                    return Some((v, c));
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Trade `u` for a customer on another route, first improving pair wins.
