@@ -137,8 +137,25 @@ holds *across* an evaluation. Guided local search is built on the same public
 surface — `set_lambda` and `penalize` move the objective, while `eval_routes`
 still reports true cost.
 
-[`examples/custom_operator.rs`](examples/custom_operator.rs) writes a whole
-operator — trading two stops on one route — against nothing else.
+An operator of your own goes into the descent itself, not a pass wrapped
+around it:
+
+```rust
+let mut mine = |cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], u, r| {
+    // one improving change; return the other vehicle you touched
+};
+local_search_with_operators(&model, &mut routes, &mut [&mut mine], |_| {});
+```
+
+It rides the same node queue and don't-look bits as relocate, swap and 2-opt,
+and a move it accepts re-wakes the routes it touched. Leave `cost[v]` correct
+for anything you rewrote, and return `Some` only for a move you applied that
+made the solution cheaper.
+
+[`examples/custom_operator.rs`](examples/custom_operator.rs) is a whole one:
+trading a pair of stops between two routes, a move volare does not ship. On
+its instance it takes the solution the shipped operators settle on from 2240
+to 2061.
 
 ## Benchmarks
 

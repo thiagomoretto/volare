@@ -14,6 +14,9 @@ pub enum Operator {
     Swap,
     TwoOpt,
     TwoOptStar,
+    /// One of the operators handed to [`local_search_with_operators`], by its
+    /// position in that slice.
+    Custom(usize),
 }
 
 impl std::fmt::Display for Operator {
@@ -23,6 +26,7 @@ impl std::fmt::Display for Operator {
             Operator::Swap => write!(f, "swap"),
             Operator::TwoOpt => write!(f, "2-opt"),
             Operator::TwoOptStar => write!(f, "2-opt*"),
+            Operator::Custom(i) => write!(f, "custom operator {i}"),
         }
     }
 }
@@ -138,7 +142,7 @@ pub fn solve_with(
     let mut cx = Search::new(m);
     let mut sol = first_solution_in(&mut cx, construct, &mut log);
     match improve {
-        Improve::HillClimb => descend(&mut cx, &mut sol, &mut log),
+        Improve::HillClimb => descend(&mut cx, &mut sol, &mut [], &mut log),
         Improve::Gls { iters } => guided_in(&mut cx, &mut sol, iters, &mut log),
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
@@ -379,12 +383,54 @@ pub fn local_search(m: &Model, sol: &mut Routes) {
 /// `local_search` reporting an `Improvement` per accepted move and a final
 /// `Done`.
 pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEvent)) {
-    descend(&mut Search::new(m), sol, log)
+    descend(&mut Search::new(m), sol, &mut [], log)
+}
+
+/// An operator of your own, called with the node the descent just popped and
+/// the route holding it.
+///
+/// Apply one improving change and return the other vehicle you touched — the
+/// same route again if the move stayed inside it — or `None` if you found
+/// nothing. Two rules, both of which the shipped operators follow:
+///
+/// * Leave `cost[v]` correct for every route you rewrote. The descent reports
+///   totals from it and never recomputes.
+/// * Only return `Some` for a move you actually applied and that made the
+///   solution cheaper. Returning `Some` for a move that did not improve
+///   anything will not terminate.
+///
+/// Price routes through the [`Search`]: `eval` when the move rearranges a
+/// route, `eval_splice` when it changes what is on one. Keep any buffers you
+/// need in the closure — `Search` cannot hold them for you.
+pub type CustomOperator<'a> =
+    &'a mut dyn FnMut(&mut Search, &mut Routes, &mut [Cost], NodeId, usize) -> Option<usize>;
+
+/// `local_search_with`, plus operators of your own in the same descent.
+///
+/// They ride the node queue and the don't-look bits with the shipped four,
+/// rather than running in a pass around them: each is offered the node the
+/// descent just woke, and a move any of them accepts re-wakes the routes it
+/// touched. They are tried after relocate and swap and before 2-opt, so the
+/// cheap single-stop moves get first refusal and the O(n²) scan stays last.
+///
+/// An accepted move reports as [`Operator::Custom`] carrying its index.
+pub fn local_search_with_operators(
+    m: &Model,
+    sol: &mut Routes,
+    operators: &mut [CustomOperator],
+    log: impl FnMut(SearchEvent),
+) {
+    descend(&mut Search::new(m), sol, operators, log)
 }
 
 /// The descent itself, on whatever objective `cx` currently carries. Public
 /// callers get true cost; only guided local search leaves penalties on it.
-fn descend(cx: &mut Search, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) {
+fn descend(
+    cx: &mut Search,
+    sol: &mut Routes,
+    operators: &mut [CustomOperator],
+    mut log: impl FnMut(SearchEvent),
+) {
     let m = cx.model();
     let mut cost: Vec<Cost> = (0..sol.len())
         .map(|v| {
@@ -435,11 +481,24 @@ fn descend(cx: &mut Search, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) 
                 Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(cx, sol, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
-                    None if !two_opt_dirty[r] => continue,
-                    None if try_two_opt(cx, sol, &mut cost, r) => (None, Operator::TwoOpt),
                     None => {
-                        two_opt_dirty[r] = false;
-                        continue;
+                        // Yours get the node before the O(n^2) scan does.
+                        let mut custom = None;
+                        for (i, op) in operators.iter_mut().enumerate() {
+                            if let Some(v) = op(cx, sol, &mut cost, u, r) {
+                                custom = Some((v, i));
+                                break;
+                            }
+                        }
+                        match custom {
+                            Some((v, i)) => (Some(v), Operator::Custom(i)),
+                            None if !two_opt_dirty[r] => continue,
+                            None if try_two_opt(cx, sol, &mut cost, r) => (None, Operator::TwoOpt),
+                            None => {
+                                two_opt_dirty[r] = false;
+                                continue;
+                            }
+                        }
                     }
                 },
             };
@@ -530,7 +589,7 @@ pub fn guided_local_search_with(
 
 fn guided_in(cx: &mut Search, sol: &mut Routes, iters: usize, mut log: impl FnMut(SearchEvent)) {
     let m = cx.model();
-    descend(cx, sol, |_| {});
+    descend(cx, sol, &mut [], |_| {});
 
     let mut best = sol.clone();
     let mut best_cost = eval_routes(m, sol).expect("infeasible local optimum");
@@ -554,7 +613,7 @@ fn guided_in(cx: &mut Search, sol: &mut Routes, iters: usize, mut log: impl FnMu
 
     for iter in 1..=iters {
         penalize_worst_arcs(cx, sol);
-        descend(cx, sol, |_| {});
+        descend(cx, sol, &mut [], |_| {});
 
         // The descent just optimized penalized cost, which is not the cost we
         // rank solutions by. `eval_routes` is always the true one.
