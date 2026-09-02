@@ -1,6 +1,9 @@
 pub mod cvrplib;
 pub mod eval;
 pub mod model;
+// Private until the shipped moves are worth committing to as API; the
+// contract users build against is `Search`, not these four functions.
+mod operators;
 pub mod search;
 pub mod solomon;
 pub mod solver;
