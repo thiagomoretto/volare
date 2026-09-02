@@ -102,7 +102,7 @@ bound expresses the other.
 | --- | --- |
 | Construction | cheapest insertion |
 | Improvement | hill climb, or guided local search on top of it |
-| Operators | relocate, swap, or-opt, 2-opt, 2-opt* |
+| Operators | relocate, swap, 2-opt, 2-opt* |
 | Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
 | Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
 

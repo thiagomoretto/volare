@@ -126,8 +126,8 @@ impl<'m> Search<'m> {
     /// without the caller allocating.
     ///
     /// Every move is this shape. Insert at `pos` is `pos..pos` with one node,
-    /// remove at `at` is `at..at + 1` with nothing, an or-opt segment move is
-    /// a stretch either way, a 2-opt\* tail trade is the tail of one route
+    /// remove at `at` is `at..at + 1` with nothing, moving a run of stops is a
+    /// stretch either way, a 2-opt\* tail trade is the tail of one route
     /// replaced by the tail of another. `repl` may point into `route` itself.
     ///
     /// This is also the only signature a future incremental evaluation can
