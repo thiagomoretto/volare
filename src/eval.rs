@@ -7,19 +7,15 @@ pub type Routes = Vec<Vec<NodeId>>;
 
 /// Cost of running `route` on vehicle `v`, or `None` if it is infeasible.
 ///
-/// Always true cost, and stateless. The solver itself evaluates through
-/// [`Search`](crate::Search), which caches what this recomputes and can carry
-/// a penalized objective. Keeping this one is what makes the cached path
-/// checkable: the two must agree on every route, and a test says so.
+/// Always true cost, and stateless. The solver evaluates through
+/// [`Search`](crate::Search) instead, which caches what this recomputes and
+/// can carry a penalized objective; this one stays the reference the cached
+/// path is checked against. Reach for it when you want the cost of a route
+/// and nothing else.
 ///
-/// Reach for it when you want the cost of a route and nothing else — reporting
-/// a solution, checking a constraint, asserting in a test.
-///
-/// Feasibility is a full forward pass, O(route length), recomputed on every
-/// call. That is the deliberate ceiling; to lift it, cache cumul prefixes
-/// per route.
+/// Feasibility is a full forward pass, recomputed on every call.
 pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
-    // ponytail: an unused vehicle is free, it never leaves the depot.
+    // An unused vehicle is free: it never leaves the depot.
     if route.is_empty() {
         return Some(0);
     }
@@ -48,19 +44,17 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
 
 /// No node on `route` is one that `v` refuses to carry.
 ///
-/// The early-out keeps an unrestricted vehicle at one branch per call; the
-/// scan itself is one bit test per node.
+/// The early-out keeps an unrestricted vehicle at one branch per call.
 pub(crate) fn vehicle_allows(m: &Model, route: &[NodeId], v: VehicleId) -> bool {
     let veh = m.vehicle(v);
     veh.forbidden.is_empty() || !route.iter().any(|&n| veh.forbids(n))
 }
 
-/// Every dimension stays inside its per-vehicle limit and every node's window,
-/// walking the route forward once per dimension.
+/// Every dimension stays inside its per-vehicle limit and every node's window.
 ///
-/// Shared with [`Search::eval`](crate::Search::eval) on purpose. Precedence is
-/// the only part of feasibility the two check differently, so it is the only
-/// part written twice.
+/// Shared with [`Search::eval`](crate::Search::eval): precedence is the only
+/// part of feasibility the two check differently, so it is the only part
+/// written twice.
 pub(crate) fn dimensions_hold(m: &Model, route: &[NodeId], v: VehicleId) -> bool {
     let veh = m.vehicle(v);
     for d in m.dimensions() {
@@ -86,9 +80,8 @@ pub(crate) fn dimensions_hold(m: &Model, route: &[NodeId], v: VehicleId) -> bool
     true
 }
 
-// The linear scan stays here on purpose: `Search` runs the timestamped
-// version, and a reference implementation that shares the trick would not
-// catch the trick going wrong.
+// The linear scan stays: a reference that shared `Search`'s stamped index
+// would not catch that index going wrong.
 fn precedence_holds(m: &Model, route: &[NodeId]) -> bool {
     route
         .iter()

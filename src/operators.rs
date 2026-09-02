@@ -1,10 +1,7 @@
 //! The neighborhood: the moves a descent tries, one function each.
 //!
-//! Each takes the [`Search`] it evaluates through, the solution it may rewrite,
-//! and the per-route costs it has to keep in step; each returns the other
-//! vehicle it touched, so the caller knows what to re-examine. Adding a move
-//! means adding a function of the same shape — `examples/custom_operator`
-//! writes one from outside the crate.
+//! Each rewrites the solution, keeps the per-route costs in step, and returns
+//! the other vehicle it touched so the caller knows what to re-examine.
 
 use crate::eval::Routes;
 use crate::search::Search;
@@ -12,10 +9,7 @@ use crate::solver::candidate_vehicles;
 use crate::types::{Cost, NodeId, VehicleId};
 
 /// Move `u` out of route `r` to its first improving position anywhere,
-/// including back into `r`. Returns the receiving vehicle.
-///
-/// `without` and `cands` belong to the caller: both are held across an
-/// evaluation, which is exactly the buffer `Search` cannot own.
+/// including back into `r`.
 pub(crate) fn try_relocate(
     cx: &mut Search,
     sol: &mut Routes,
@@ -31,8 +25,8 @@ pub(crate) fn try_relocate(
     without.remove(at);
     let without_cost = cx.eval(without, VehicleId(r as u32))?;
 
-    // Probe first, commit after: the accepted route is still in the context,
-    // and `sol` cannot be written while a candidate base borrows it.
+    // Probe first, commit after: `sol` cannot be written while a candidate
+    // base borrows it.
     candidate_vehicles(cx.model(), sol, cands);
     let mut accepted = None;
     'search: for &v in cands.iter() {
@@ -65,11 +59,9 @@ pub(crate) fn try_relocate(
 }
 
 /// Trade `u` for a customer on another route, first improving pair wins.
-/// Returns the other vehicle.
 ///
-/// Relocate cannot reach these moves when both routes are near capacity: moving
-/// a node either way overflows, and only an even trade fits. On the X set that
-/// is most of the search space, since the reference fleet is sized tight.
+/// Relocate cannot reach these moves when both routes are near capacity:
+/// moving a node either way overflows, and only an even trade fits.
 pub(crate) fn try_swap(
     cx: &mut Search,
     sol: &mut Routes,
@@ -86,7 +78,6 @@ pub(crate) fn try_swap(
             let w = sol[v][q];
             sol[r][at] = w;
             sol[v][q] = u;
-            // Route `v` goes unevaluated when `r` is already infeasible.
             let new = match cx.eval(&sol[r], VehicleId(r as u32)) {
                 Some(a) => cx.eval(&sol[v], VehicleId(v as u32)).map(|b| (a, b)),
                 None => None,
@@ -125,22 +116,21 @@ pub(crate) fn try_two_opt(cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], 
     false
 }
 
-/// A candidate 2-opt* move: penalised gain, the other vehicle, the two
-/// rebuilt routes, and their true costs.
+/// A candidate move: gain, the other vehicle, the two rebuilt routes, and
+/// their costs.
 type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 
 /// Inter-route 2-opt*: cut one arc in route `r` and one in another route,
-/// trade the tails. Returns the other vehicle.
+/// trade the tails.
 ///
-/// This is the operator that changes the customer-to-route partition in
-/// chunks: relocate and swap shift one customer at a time, which cannot undo
-/// a bad layout once routes fill up. The delta is O(1) arc arithmetic — only
-/// the two cut arcs and the two reconnecting arcs change — and the full
-/// evaluation runs only on improving candidates, to confirm capacity.
+/// This is what changes the customer-to-route partition in chunks; relocate
+/// and swap shift one customer at a time and cannot undo a bad layout once
+/// routes fill up. The delta is arc arithmetic, so the full evaluation runs
+/// only on improving candidates, to confirm capacity.
 ///
 /// Best-improvement, unlike the cheaper operators: a tail swap commits many
-/// customers at once, so taking the first improving cut drags the descent
-/// into noticeably worse local optima (measured on X-n143-k7).
+/// customers at once, so taking the first improving cut lands in worse local
+/// optima.
 pub(crate) fn try_two_opt_star(
     cx: &mut Search,
     sol: &mut Routes,
@@ -162,9 +152,8 @@ pub(crate) fn try_two_opt_star(
                 if tail_r.is_none() && tail_v.is_none() {
                     continue; // both tails empty: no arc changes
                 }
-                // `cx.arc`, not `m.eval`: under GLS the delta must rank on the
-                // same objective the acceptance below runs on, or the best
-                // candidate by one measure loses to a worse one by the other.
+                // `cx.arc`, not `m.eval`: the delta must rank on the same
+                // objective the acceptance below runs on.
                 let out = cx.arc(veh_r.cost_class, sol[r][i], tail_r.unwrap_or(veh_r.end))
                     + cx.arc(veh_v.cost_class, sol[v][j], tail_v.unwrap_or(veh_v.end));
                 let into = cx.arc(veh_r.cost_class, sol[r][i], tail_v.unwrap_or(veh_r.end))

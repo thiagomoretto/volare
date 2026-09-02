@@ -158,13 +158,9 @@ comparing `cx.eval` against the `cost` it was handed is already minimizing what
 the round is minimizing.
 
 [`examples/custom_operator.rs`](examples/custom_operator.rs) is a whole one:
-trading a pair of stops between two routes, a move volare does not ship.
-
-```text
-                  shipped   with yours    trades
-hill climb           2240         2061         2
-gls, 30 rounds       2008         1885         4
-```
+trading a pair of stops between two routes, a move volare does not ship. It
+reports what the shipped operators reach alone against what they reach with
+yours in the rotation, on both strategies.
 
 ## Benchmarks
 

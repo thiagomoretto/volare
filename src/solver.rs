@@ -142,24 +142,18 @@ pub fn solve_with(
 
 /// `solve_with`, plus operators of your own in every descent it runs.
 ///
-/// Yours ride the node queue and the don't-look bits with the shipped four,
+/// Yours ride the node queue and the don't-look bits with the shipped four
 /// rather than running in a pass around them: each is offered the node the
 /// descent just woke, and a move any of them accepts re-wakes the routes it
-/// touched. They are tried after relocate and swap and before 2-opt, so the
-/// cheap single-stop moves get first refusal and the O(n²) scan stays last.
-/// An accepted move reports as [`Operator::Custom`] carrying its index.
+/// touched. They are tried after relocate and swap and before 2-opt. An
+/// accepted move reports as [`Operator::Custom`] carrying its index.
 ///
-/// Both [`Improve`] modes take them, so guided local search offers your
-/// operator the same nodes the shipped four get, once per round.
-///
-/// Under guided local search the objective carries arc penalties, and
-/// [`Search`] applies them to everything it prices. An operator that compares
-/// `cx.eval` against the `cost` it was handed is therefore already minimizing
-/// the same thing the round is minimizing, with nothing to opt into.
-///
-/// Those rounds descend silently, though, so no [`Operator::Custom`] event
-/// escapes them — count accepted moves inside your own operator if you want
-/// them under `Improve::Gls`.
+/// Both [`Improve`] modes take them. Under guided local search the objective
+/// carries arc penalties and [`Search`] applies them to everything it prices,
+/// so an operator comparing `cx.eval` against the `cost` it was handed is
+/// already minimizing what the round is minimizing. Those rounds descend
+/// silently, though, so no [`Operator::Custom`] event escapes them; count
+/// accepted moves inside your own operator instead.
 pub fn solve_with_operators(
     m: &Model,
     construct: Construct,
@@ -168,7 +162,7 @@ pub fn solve_with_operators(
     mut log: impl FnMut(SearchEvent),
 ) -> Solution {
     // One context for the whole solve, so construction's buffers are the
-    // descent's buffers.
+    // descent's.
     let mut cx = Search::new(m);
     let mut sol = first_solution_in(&mut cx, construct, &mut log);
     match improve {
@@ -183,12 +177,9 @@ pub fn solve_with_operators(
 /// one so the fleet can still grow.
 ///
 /// One empty is enough only while empty vehicles are interchangeable. Once
-/// they are not — per-vehicle `forbid` sets make them differ — the caller
-/// retries with all of them (see `cheapest_insertion`). The unserved sink is
-/// always a candidate: dropping must be on offer even when it is empty.
-///
-/// Fills `out` rather than returning: the caller holds this list across
-/// evaluations, so it is the caller's buffer to own.
+/// per-vehicle `forbid` sets make them differ, the caller retries with all of
+/// them. The unserved sink is always a candidate: dropping must be on offer
+/// even when it is empty.
 pub(crate) fn candidate_vehicles(m: &Model, sol: &Routes, out: &mut Vec<usize>) {
     out.clear();
     out.extend((0..sol.len()).filter(|&i| !sol[i].is_empty()));
@@ -277,7 +268,7 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
+    /// Uniform over `0..n`. The modulo bias is negligible at these `n`.
     #[inline]
     fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
@@ -419,19 +410,17 @@ pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEven
 /// An operator of your own, called with the node the descent just popped and
 /// the route holding it.
 ///
-/// Apply one improving change and return the other vehicle you touched — the
-/// same route again if the move stayed inside it — or `None` if you found
-/// nothing. Two rules, both of which the shipped operators follow:
+/// Apply one improving change and return the other vehicle you touched, the
+/// same route again if the move stayed inside it, or `None` if you found
+/// nothing. Two rules:
 ///
-/// * Leave `cost[v]` correct for every route you rewrote. The descent reports
+/// * Leave `cost[v]` correct for every route you rewrote; the descent reports
 ///   totals from it and never recomputes.
-/// * Only return `Some` for a move you actually applied and that made the
-///   solution cheaper. Returning `Some` for a move that did not improve
-///   anything will not terminate.
+/// * Return `Some` only for a move you applied that made the solution
+///   cheaper. Anything else will not terminate.
 ///
-/// Price routes through the [`Search`]: `eval` when the move rearranges a
-/// route, `eval_splice` when it changes what is on one. Keep any buffers you
-/// need in the closure — `Search` cannot hold them for you.
+/// Price routes through the [`Search`], and keep any buffers you need in the
+/// closure.
 pub type CustomOperator<'a> =
     &'a mut dyn FnMut(&mut Search, &mut Routes, &mut [Cost], NodeId, usize) -> Option<usize>;
 
@@ -451,8 +440,7 @@ fn descend(
         })
         .collect();
 
-    // Held across evaluations, so they are the descent's buffers, not the
-    // context's.
+    // Held across evaluations, so they belong to the descent, not the context.
     let mut without = Vec::new();
     let mut cands = Vec::new();
 
@@ -494,7 +482,6 @@ fn descend(
                 None => match try_swap(cx, sol, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
                     None => {
-                        // Yours get the node before the O(n^2) scan does.
                         let mut custom = None;
                         for (i, op) in operators.iter_mut().enumerate() {
                             if let Some(v) = op(cx, sol, &mut cost, u, r) {
@@ -533,9 +520,8 @@ fn descend(
 
         if !improved {
             // The fine operators are at a fixpoint: one 2-opt* pass over all
-            // routes. Firing it here instead of per node keeps the big tail
-            // swaps from disrupting routes that relocate would have fixed for
-            // less (X-n143-k7 regressed sharply the other way).
+            // routes. Firing it here rather than per node keeps the big tail
+            // swaps from disrupting routes relocate would have fixed for less.
             for r in 0..sol.len() {
                 if sol[r].is_empty() {
                     continue;
@@ -574,11 +560,9 @@ const LAMBDA_DENOMINATOR: Cost = 10;
 ///
 /// No RNG, so this stays as deterministic as the hill climb it wraps.
 ///
-/// ponytail: every iteration restarts a full local search from scratch. Waking
-/// only the nodes touched by the arcs just penalized is the win, but seeding
-/// the queue alone is capped by `descend`'s outer re-sweep, which starts a
-/// full sweep anyway — tighten that first, then seed. Both are worth it when
-/// the iteration count needs to go past a few hundred.
+/// Every iteration restarts a full local search. Waking only the nodes touched
+/// by the arcs just penalized is the win, but seeding the queue is capped by
+/// `descend`'s outer re-sweep, which starts a full sweep anyway.
 pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
     guided_local_search_with(m, sol, iters, |_| {})
 }
@@ -616,9 +600,9 @@ fn guided_in(
         cost: best_cost,
     });
 
-    // Scale one penalty into arc-cost units, so lambda * penalty is comparable
-    // to the distances the operators are trading against it.
-    // Dropped nodes are not customers: they must not dilute lambda.
+    // Scale one penalty into arc-cost units, comparable to the distances the
+    // operators trade against it. Dropped nodes are not customers, so they
+    // must not dilute it.
     let customers: usize = sol
         .iter()
         .enumerate()
@@ -670,9 +654,8 @@ fn penalize_worst_arcs(cx: &mut Search, sol: &Routes) {
         let veh = m.vehicle(VehicleId(v as u32));
         let mut prev = veh.start;
         for &node in route.iter().chain(std::iter::once(&veh.end)) {
-            // True arc cost, not `cx.arc`: utility must rank by what the arc
-            // really costs, and the penalty count is the other half of the
-            // ratio.
+            // True arc cost, not `cx.arc`: utility ranks by what the arc
+            // really costs.
             let cost = m.eval(veh.cost_class, prev, node);
             let seen = 1 + cx.penalty(prev, node);
             let arc = if prev <= node {

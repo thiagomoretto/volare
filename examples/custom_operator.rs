@@ -1,29 +1,13 @@
 //! Bring your own operator and hand it to the solver.
 //!
-//! An operator is a function that finds one improving change and applies it.
-//! This is the smallest one worth writing: take the stop the descent just
-//! woke together with the one after it, and try trading that pair for a pair
-//! on another route. volare ships a swap that trades one stop for one; two for
-//! two is a move it does not have.
+//! An operator finds one improving change and applies it. This one takes the
+//! stop the descent just woke together with the one after it, and trades that
+//! pair for a pair on another route. volare ships a swap that trades one stop
+//! for one; two for two is a move it does not have.
 //!
-//! `solve_with_operators` puts it in the rotation with volare's own four. It
-//! is not a pass wrapped around the solver — the operator rides the same node
-//! queue and the same don't-look bits as relocate, swap and 2-opt, and a move
-//! it accepts re-wakes the routes it touched, exactly as theirs do. Both
-//! strategies take it, as the two rows below show.
-//!
-//! The contract is two functions wide. [`Search`] prices routes:
-//!
-//! * `cx.eval(route, v)` prices a route. Reach for it when a move *rearranges*
-//!   a route, because the stops are the same ones in a different order.
-//! * `cx.eval_splice(route, range, repl, v)` prices a route with one stretch
-//!   replaced. Reach for it when a move *changes what is on* the route —
-//!   inserting, removing, moving a run to another vehicle — because then
-//!   there is a new route to build and no reason to allocate one.
-//!
-//! Your side of the bargain: leave `cost[v]` correct for any route you
-//! rewrote, and return `Some` only for a move you actually applied that made
-//! the solution cheaper.
+//! `solve_with_operators` puts it in the rotation with volare's own four, so
+//! it rides the same node queue and don't-look bits rather than running in a
+//! pass around them. Both strategies take it.
 //!
 //! ```sh
 //! cargo run --release --example custom_operator
@@ -42,13 +26,13 @@ fn main() {
     report(&m, "gls, 30 rounds", || Improve::Gls { iters: 30 });
 }
 
-/// Solve twice on the same strategy — once with volare's four operators, once
-/// with ours added — and print the two costs side by side.
+/// Solve twice on the same strategy, with and without our operator, and print
+/// the two costs side by side.
 fn report(m: &Model, label: &str, improve: impl Fn() -> Improve) {
     let shipped = solve_with(m, Construct::CheapestInsertion, improve(), |_| {}).cost;
 
-    // Counted inside the operator, not from the event stream: guided local
-    // search runs its descents silent, so no per-move event escapes it.
+    // Counted inside the operator: guided local search descends silently, so
+    // no per-move event escapes it.
     let mut trades = 0;
     let mut mine = |cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], u: NodeId, r: usize| {
         let applied = trade_pairs(cx, sol, cost, u, r);
@@ -66,16 +50,13 @@ fn report(m: &Model, label: &str, improve: impl Fn() -> Improve) {
 }
 
 /// Trade the pair of stops starting at `u` for a pair on another route, first
-/// improvement wins. Returns the other vehicle.
+/// improvement wins.
 ///
-/// The whole operator. volare ships `swap`, which trades one stop for one
-/// stop; trading two for two reaches arrangements that no sequence of single
-/// swaps can, because each single step through them costs more than both ends.
-///
-/// Both routes keep their length, so the four stops can be exchanged in place
-/// and put back if the trade does not pay — no buffers, and nothing stored
-/// between calls. `cx.eval` answers `None` for a route that breaks a
-/// constraint, so the fall-through arm covers infeasible and unprofitable
+/// Trading two for two reaches arrangements no sequence of single swaps can,
+/// because each single step through them costs more than both ends. Both
+/// routes keep their length, so the stops are exchanged in place and put back
+/// if the trade does not pay. `cx.eval` answers `None` for a route that breaks
+/// a constraint, so the fall-through arm covers infeasible and unprofitable
 /// alike.
 fn trade_pairs(
     cx: &mut Search,
@@ -122,12 +103,11 @@ fn trade_pairs(
     None
 }
 
-/// Sixty stops scattered over a square, eight vans, and a delivery window on
+/// Stops scattered over a square, a small fleet, and a delivery window on
 /// every other stop.
 ///
-/// The windows are what make a trade worth trying. Without them a route's
-/// order is unconstrained and 2-opt flattens it; with them most reversals turn
-/// infeasible, and exchanging two stops is one of the few rearrangements left.
+/// The windows are what make a trade worth trying: without them a route's
+/// order is unconstrained and 2-opt flattens it.
 fn windowed_model() -> volare::Model {
     let coords = scattered_stops(60);
     let fleet = 8;
@@ -159,7 +139,7 @@ fn windowed_model() -> volare::Model {
     b.build()
 }
 
-/// Seeded by hand, so the example prints the same numbers on every machine.
+/// Seeded, so the example prints the same numbers on every machine.
 fn scattered_stops(n: usize) -> Vec<(f64, f64)> {
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
