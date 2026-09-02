@@ -344,8 +344,9 @@ where
 
     let mut queued = vec![false; m.node_count()];
     let mut index = vec![u32::MAX; m.node_count()];
-    // A route only stops being 2-opt clean when a move touches it.
-    let mut two_opt_clean = vec![false; sol.len()];
+    // Route-level don't-look bit: 2-opt takes a route and ignores the popped
+    // node, so without this it rescans one route once per node in it.
+    let mut two_opt_dirty = vec![true; sol.len()];
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
@@ -377,10 +378,10 @@ where
                 Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(m, sol, &eval, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
-                    None if two_opt_clean[r] => continue,
+                    None if !two_opt_dirty[r] => continue,
                     None if try_two_opt(m, sol, &eval, &mut cost, r) => (None, Operator::TwoOpt),
                     None => {
-                        two_opt_clean[r] = true;
+                        two_opt_dirty[r] = false;
                         continue;
                     }
                 },
@@ -391,7 +392,7 @@ where
                 cost: cost.iter().sum(),
             });
             for t in [Some(r), other.filter(|&v| v != r)].into_iter().flatten() {
-                two_opt_clean[t] = false;
+                two_opt_dirty[t] = true;
                 for &n in &sol[t] {
                     index[n.index()] = t as u32;
                     if !queued[n.index()] {
@@ -412,8 +413,8 @@ where
                     continue;
                 }
                 if let Some(v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
-                    two_opt_clean[r] = false;
-                    two_opt_clean[v] = false;
+                    two_opt_dirty[r] = true;
+                    two_opt_dirty[v] = true;
                     improved = true;
                     log(SearchEvent::Improvement {
                         operator: Operator::TwoOptStar,
