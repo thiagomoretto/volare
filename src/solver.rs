@@ -406,7 +406,7 @@ where
             // The fine operators are at a fixpoint: one 2-opt* pass over all
             // routes. Firing it here instead of per node keeps the big tail
             // swaps from disrupting routes that relocate would have fixed for
-            // less (X-n143-k7 regressed 14.5% -> 21.1% the other way).
+            // less (X-n143-k7 regressed sharply the other way).
             for r in 0..sol.len() {
                 if sol[r].is_empty() {
                     continue;
@@ -538,8 +538,10 @@ fn eval_route_penalized(m: &Model, p: &Penalties, route: &[NodeId], v: VehicleId
 /// No RNG, so this stays as deterministic as the hill climb it wraps.
 ///
 /// ponytail: every iteration restarts a full local search from scratch. Waking
-/// only the nodes touched by the arcs just penalized is the 3-5x speedup —
-/// add it when the iteration count needs to go past a few hundred.
+/// only the nodes touched by the arcs just penalized is the win, but seeding
+/// the queue alone is capped by `descend`'s outer re-sweep, which starts a
+/// full sweep anyway — tighten that first, then seed. Both are worth it when
+/// the iteration count needs to go past a few hundred.
 pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
     guided_local_search_with(m, sol, iters, |_| {})
 }
@@ -791,7 +793,7 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 ///
 /// Best-improvement, unlike the cheaper operators: a tail swap commits many
 /// customers at once, so taking the first improving cut drags the descent
-/// into noticeably worse local optima (X-n143-k7 went 14.5% -> 21.1% gap).
+/// into noticeably worse local optima (measured on X-n143-k7).
 fn try_two_opt_star<F>(
     m: &Model,
     sol: &mut Routes,
