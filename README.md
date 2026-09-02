@@ -106,6 +106,40 @@ bound expresses the other.
 | Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
 | Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
 
+## Bring your own algorithm
+
+`Model` is the problem and never changes during a solve. `Search` is the
+attempt at it: one per solve, per thread, holding the objective, the caches
+evaluation needs, and the buffer moves are built in.
+
+```rust
+let mut cx = Search::new(&model);
+
+// Price any route.
+let c = cx.eval(&route, vehicle);
+
+// Price a route with one stretch replaced — the shape every move has.
+let insert  = cx.eval_splice(&route, pos..pos, &[node], vehicle);
+let remove  = cx.eval_splice(&route, at..at + 1, &[], vehicle);
+let segment = cx.eval_splice(&route, i..j, &run, vehicle);
+
+// Commit what the probe accepted, without rebuilding it.
+route.clear();
+route.extend_from_slice(cx.spliced());
+
+// Price one arc on the objective in force, for operators that rank by
+// arc arithmetic rather than by whole routes.
+let a = cx.arc(vehicle_cost_class, from, to);
+```
+
+`Search` owns the buffers evaluation consumes; the caller owns the ones it
+holds *across* an evaluation. Guided local search is built on the same public
+surface — `set_lambda` and `penalize` move the objective, while `eval_routes`
+still reports true cost.
+
+[`examples/custom_operator.rs`](examples/custom_operator.rs) implements or-opt,
+an operator the library does not ship, using nothing else.
+
 ## Benchmarks
 
 Mean gap against the best known cost across the 43 CVRPLIB X instances with n up
