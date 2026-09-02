@@ -6,6 +6,13 @@
 //!   cargo run --release --bin bench -- --log         # search log to stderr
 //!   cargo run --release --bin bench -- X-n101        # name filter
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
+//!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
+//!
+//! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
+//! each draw. Restarts help the hill climb but not GLS: a restart wipes the
+//! penalties that aim the next descent, so rounds beat seeds at equal budget.
+//! One start stays the plain greedy, so baseline.csv keeps its meaning.
+//!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!
 //! A `--scenario` picks a model variant instead of the plain CVRP: a new
@@ -44,6 +51,15 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--gls=")?.parse().ok());
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
+    // N randomized solves, cheapest wins. `--rcl=K` is the draw width.
+    let restarts: usize = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--restarts=")?.parse().ok())
+        .unwrap_or(1);
+    let rcl: usize = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--rcl=")?.parse().ok())
+        .unwrap_or(3);
 
     assert!(
         scenario.is_none_or(|s| s == "forbid" || s == "drop" || s == "tw"),
@@ -57,12 +73,25 @@ fn main() {
         !(write_baseline && gls.is_some()),
         "baseline.csv guards the hill climb — writing it from a GLS run would erase that"
     );
+    assert!(restarts >= 1, "--restarts must be at least 1");
+    assert!(
+        !(write_baseline && restarts > 1),
+        "baseline.csv guards the single-start hill climb — a multi-start run would erase that"
+    );
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let instances = discover_instances(root, filter);
 
     match scenario {
-        None => bench_reference(root, &instances, write_baseline, log_search, gls),
+        None => bench_reference(
+            root,
+            &instances,
+            write_baseline,
+            log_search,
+            gls,
+            restarts,
+            rcl,
+        ),
         Some(name) => bench_scenario(name, &instances, log_search, gls),
     }
 }
@@ -73,10 +102,15 @@ fn bench_reference(
     write_baseline: bool,
     log_search: bool,
     gls: Option<usize>,
+    restarts: usize,
+    rcl: usize,
 ) {
     let baseline_path = root.join("baseline.csv");
     let baseline = read_baseline(&baseline_path);
 
+    if restarts > 1 {
+        println!("{restarts} restarts, RCL {rcl}, cheapest of each; ms covers all starts");
+    }
     println!(
         "{:<14} {:>5} {:>9} {:>7} {:>9} {:>7} {:>7}",
         "instance", "n", "ref", "ctor%", "ours", "gap%", "ms"
@@ -97,12 +131,26 @@ fn bench_reference(
 
         let started = Instant::now();
         let mut log = logger(log_search);
-        let mut sol = first_solution_with(&model, Construct::CheapestInsertion, &mut log);
-        let ctor = eval_routes(&model, &sol).expect("infeasible construction");
-        match gls {
-            Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
-            None => local_search_with(&model, &mut sol, &mut log),
-        }
+        // k = 1 is cheapest insertion, so one start reproduces baseline.csv.
+        // `min_by_key` keeps the first minimum, so ctor is the winner's own.
+        let (cost, ctor, sol) = (0..restarts)
+            .map(|start| {
+                let construct = Construct::GreedyRandomized {
+                    seed: start as u64,
+                    k: if restarts == 1 { 1 } else { rcl },
+                };
+                let mut sol = first_solution_with(&model, construct, &mut log);
+                let ctor = eval_routes(&model, &sol).expect("infeasible construction");
+                match gls {
+                    Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
+                    None => local_search_with(&model, &mut sol, &mut log),
+                }
+                let cost =
+                    eval_routes(&model, &sol).expect("solver returned an infeasible solution");
+                (cost, ctor, sol)
+            })
+            .min_by_key(|&(cost, ..)| cost)
+            .expect("restarts >= 1");
         let ms = started.elapsed().as_secs_f64() * 1000.0;
 
         assert!(
@@ -110,7 +158,6 @@ fn bench_reference(
             "{}: not all nodes routed",
             inst.name
         );
-        let cost = eval_routes(&model, &sol).expect("solver returned an infeasible solution");
         let gap = 100.0 * (cost - reference) as f64 / reference as f64;
         gap_sum += gap;
 
