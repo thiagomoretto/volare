@@ -31,7 +31,6 @@ fn out_of_order_is_infeasible() {
     assert!(eval_route(&m, &[NodeId(3), NodeId(2), NodeId(1)], VehicleId(0)).is_some());
 }
 
-/// The line that separates this from a pickup-and-delivery pair.
 #[test]
 fn a_pair_split_across_vehicles_is_unordered() {
     let mut b = builder(2);
@@ -60,7 +59,6 @@ fn unrelated_nodes_sit_anywhere() {
     }
 }
 
-/// Transitive without being declared transitive.
 #[test]
 fn chains_compose() {
     let mut b = builder(1);
@@ -79,7 +77,6 @@ fn chains_compose() {
     );
 }
 
-/// Construction and every operator share one feasibility gate.
 #[test]
 fn the_solver_never_returns_an_out_of_order_route() {
     // Cheapest order on a line runs 1..5; requiring 2 ahead of 1 and 4 ahead
@@ -102,7 +99,6 @@ fn the_solver_never_returns_an_out_of_order_route() {
     }
 }
 
-/// A dropped node is out of the routing, so ordering must not keep it in.
 #[test]
 fn the_unserved_sink_ignores_ordering() {
     let mut b = builder(1);

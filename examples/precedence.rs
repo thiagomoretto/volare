@@ -1,10 +1,5 @@
-//! Ordering within a route: one stop served ahead of another.
-//!
-//! `ModelBuilder::precede(before, after)` holds whenever a single vehicle
-//! serves both stops, in construction and in every improvement move. It says
-//! nothing about a pair split across two vehicles, and it never pulls the two
-//! onto one vehicle — pinning a pair to one van is a separate constraint that
-//! volare does not have yet. Run with:
+//! `precede(before, after)` holds whenever a single vehicle serves both
+//! stops. A pair split across two vehicles is unordered.
 //!
 //! ```sh
 //! cargo run --example precedence
@@ -13,8 +8,7 @@
 use volare::{Construct, Improve, ModelBuilder, NodeId, solve};
 
 fn main() {
-    // A rear-door van, loaded once and unloaded from the back. Two pallets
-    // only block each other when they ride the same van.
+    // A rear-door van: two pallets block each other only on the same van.
     let coords: [(f64, f64); 7] = [
         (0.0, 0.0),    // 0 depot
         (12.0, 3.0),   // 1
@@ -25,7 +19,6 @@ fn main() {
         (7.0, -13.0),  // 6
     ];
 
-    // Stop 2's pallet went in before stop 1's, so stop 1 comes out first.
     let blocked_by = [
         (NodeId(1), NodeId(2)),
         (NodeId(3), NodeId(4)),
@@ -64,7 +57,6 @@ fn main() {
     }
     println!("total cost: {}", sol.cost);
 
-    // Hard where it applies, absent where it does not.
     for (front, behind) in blocked_by {
         let (f, t) = (front.index(), behind.index());
         let Some(route) = sol
@@ -72,7 +64,6 @@ fn main() {
             .iter()
             .find(|r| r.contains(&front) && r.contains(&behind))
         else {
-            // Two vans, two loads: neither pallet is in the other's way.
             println!("{f} and {t} went to different vans, unordered");
             continue;
         };

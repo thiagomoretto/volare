@@ -63,7 +63,6 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     Some(cost)
 }
 
-/// A node with no successors costs nothing, which is nearly every node.
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array
 // if dense pickup-and-delivery ever makes this the hot spot.
 fn precedence_holds(m: &Model, route: &[NodeId]) -> bool {
