@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use crate::eval::{Routes, eval_routes};
 use crate::model::Model;
-use crate::operators::{try_relocate, try_swap, try_two_opt, try_two_opt_star};
+use crate::operators::{
+    Scratch, try_or_opt, try_relocate, try_swap, try_two_opt, try_two_opt_star,
+};
 use crate::search::Search;
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -12,6 +14,7 @@ use crate::types::{Cost, NodeId, VehicleId};
 pub enum Operator {
     Relocate,
     Swap,
+    OrOpt,
     TwoOpt,
     TwoOptStar,
 }
@@ -21,6 +24,7 @@ impl std::fmt::Display for Operator {
         match self {
             Operator::Relocate => write!(f, "relocate"),
             Operator::Swap => write!(f, "swap"),
+            Operator::OrOpt => write!(f, "or-opt"),
             Operator::TwoOpt => write!(f, "2-opt"),
             Operator::TwoOptStar => write!(f, "2-opt*"),
         }
@@ -395,8 +399,7 @@ fn descend(cx: &mut Search, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) 
 
     // Held across evaluations, so they are the descent's buffers, not the
     // context's.
-    let mut without = Vec::new();
-    let mut cands = Vec::new();
+    let mut scratch = Scratch::default();
 
     let mut queued = vec![false; m.node_count()];
     let mut index = vec![u32::MAX; m.node_count()];
@@ -428,19 +431,24 @@ fn descend(cx: &mut Search, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) 
             // the u32::MAX sentinel.
             let r = index[u.index()] as usize;
 
-            // Cheapest operator first: relocate and swap each cost O(n) route
-            // evaluations, 2-opt costs O(n^2).
-            let relocated = try_relocate(cx, sol, &mut cost, u, r, &mut without, &mut cands);
+            // Cheapest operator first: relocate, swap and or-opt each cost
+            // O(n) route evaluations, 2-opt costs O(n^2). Or-opt sits after
+            // the two single-stop moves because it prices a few runs per node
+            // where they price one.
+            let relocated = try_relocate(cx, sol, &mut cost, u, r, &mut scratch);
             let (other, operator) = match relocated {
                 Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(cx, sol, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
-                    None if !two_opt_dirty[r] => continue,
-                    None if try_two_opt(cx, sol, &mut cost, r) => (None, Operator::TwoOpt),
-                    None => {
-                        two_opt_dirty[r] = false;
-                        continue;
-                    }
+                    None => match try_or_opt(cx, sol, &mut cost, u, r, &mut scratch) {
+                        Some(v) => (Some(v), Operator::OrOpt),
+                        None if !two_opt_dirty[r] => continue,
+                        None if try_two_opt(cx, sol, &mut cost, r) => (None, Operator::TwoOpt),
+                        None => {
+                            two_opt_dirty[r] = false;
+                            continue;
+                        }
+                    },
                 },
             };
             improved = true;
