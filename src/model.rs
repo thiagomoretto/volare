@@ -64,10 +64,7 @@ pub struct Model {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     unserved: Option<VehicleId>,
-    /// Successors by node; empty when no ordering was declared.
     precedence: Vec<Vec<NodeId>>,
-    /// Cached `!precedence.is_empty()`: `eval_route` reads it per call.
-    any_precedence: bool,
 }
 
 impl Model {
@@ -91,11 +88,10 @@ impl Model {
         &self.dimensions
     }
 
-    /// Cached rather than derived: `eval_route` reads it per call, where
-    /// `!precedence.is_empty()` measured slower.
+    /// Read on every `eval_route` call, so keep it a plain field test.
     #[inline]
     pub(crate) fn has_precedence(&self) -> bool {
-        self.any_precedence
+        !self.precedence.is_empty()
     }
 
     /// Nodes that must be served after `n` when a route holds both.
@@ -274,7 +270,6 @@ impl ModelBuilder {
             );
         }
         let model = Model {
-            any_precedence: !self.precedence.is_empty(),
             node_count: self.node_count,
             evaluators: self.evaluators,
             dimensions: self.dimensions,
