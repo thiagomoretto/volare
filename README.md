@@ -102,7 +102,7 @@ bound expresses the other.
 | --- | --- |
 | Construction | cheapest insertion |
 | Improvement | hill climb, or guided local search on top of it |
-| Operators | relocate, swap, 2-opt, 2-opt* |
+| Operators | relocate, swap, or-opt, 2-opt, 2-opt* |
 | Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
 | Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
 
@@ -137,8 +137,8 @@ holds *across* an evaluation. Guided local search is built on the same public
 surface — `set_lambda` and `penalize` move the objective, while `eval_routes`
 still reports true cost.
 
-[`examples/custom_operator.rs`](examples/custom_operator.rs) implements or-opt,
-an operator the library does not ship, using nothing else.
+[`examples/custom_operator.rs`](examples/custom_operator.rs) writes a whole
+operator — trading two stops on one route — against nothing else.
 
 ## Benchmarks
 
