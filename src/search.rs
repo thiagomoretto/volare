@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
+use crate::eval::{dimensions_hold, vehicle_allows};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -95,40 +96,23 @@ impl<'m> Search<'m> {
             return Some(0);
         }
         let m = self.m;
-        let veh = m.vehicle(v);
-
-        if !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n)) {
+        if !vehicle_allows(m, route, v) {
             return None;
         }
-
         // A dropped node's window or ordering must not block dropping it.
         if m.unserved_vehicle() != Some(v) {
+            // Precedence is the one check this does differently, so it is the
+            // one written twice; the rest is shared with `eval_route`.
             if self.has_precedence && !self.precedence_holds(route) {
                 return None;
             }
-            for d in m.dimensions() {
-                let cap = d.max_cumul[v.index()];
-                let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
-                if cumul > cap {
-                    return None;
-                }
-                let mut prev = veh.start;
-                for &node in route.iter().chain(std::iter::once(&veh.end)) {
-                    // Late is infeasible before the clamp; early waits via the clamp.
-                    let arrive = cumul + m.eval(d.transit, prev, node);
-                    if arrive > d.upper_bound[node.index()] {
-                        return None;
-                    }
-                    cumul = arrive.max(d.lower_bound[node.index()]);
-                    if cumul > cap {
-                        return None;
-                    }
-                    prev = node;
-                }
+            if !dimensions_hold(m, route, v) {
+                return None;
             }
         }
 
         // One walk, not two: the penalty rides along with the arc it is on.
+        let veh = m.vehicle(v);
         let mut cost = 0;
         let mut prev = veh.start;
         for &node in route.iter().chain(std::iter::once(&veh.end)) {
@@ -193,11 +177,6 @@ impl<'m> Search<'m> {
     }
 
     /// Weight one penalty carries, in arc-cost units.
-    #[inline]
-    pub fn lambda(&self) -> Cost {
-        self.lambda
-    }
-
     pub fn set_lambda(&mut self, lambda: Cost) {
         self.lambda = lambda;
     }

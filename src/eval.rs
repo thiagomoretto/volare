@@ -23,41 +23,20 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     if route.is_empty() {
         return Some(0);
     }
-    let veh = m.vehicle(v);
-
-    // The early-out keeps an unrestricted vehicle at one branch per call;
-    // the scan itself is one bit test per node.
-    if !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n)) {
+    if !vehicle_allows(m, route, v) {
         return None;
     }
-
     // A dropped node's window or ordering must not block dropping it.
     if m.unserved_vehicle() != Some(v) {
         if m.has_precedence() && !precedence_holds(m, route) {
             return None;
         }
-        for d in m.dimensions() {
-            let cap = d.max_cumul[v.index()];
-            let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
-            if cumul > cap {
-                return None;
-            }
-            let mut prev = veh.start;
-            for &node in route.iter().chain(std::iter::once(&veh.end)) {
-                // Late is infeasible before the clamp; early waits via the clamp.
-                let arrive = cumul + m.eval(d.transit, prev, node);
-                if arrive > d.upper_bound[node.index()] {
-                    return None;
-                }
-                cumul = arrive.max(d.lower_bound[node.index()]);
-                if cumul > cap {
-                    return None;
-                }
-                prev = node;
-            }
+        if !dimensions_hold(m, route, v) {
+            return None;
         }
     }
 
+    let veh = m.vehicle(v);
     let mut cost = 0;
     let mut prev = veh.start;
     for &node in route.iter().chain(std::iter::once(&veh.end)) {
@@ -65,6 +44,46 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         prev = node;
     }
     Some(cost)
+}
+
+/// No node on `route` is one that `v` refuses to carry.
+///
+/// The early-out keeps an unrestricted vehicle at one branch per call; the
+/// scan itself is one bit test per node.
+pub(crate) fn vehicle_allows(m: &Model, route: &[NodeId], v: VehicleId) -> bool {
+    let veh = m.vehicle(v);
+    veh.forbidden.is_empty() || !route.iter().any(|&n| veh.forbids(n))
+}
+
+/// Every dimension stays inside its per-vehicle limit and every node's window,
+/// walking the route forward once per dimension.
+///
+/// Shared with [`Search::eval`](crate::Search::eval) on purpose. Precedence is
+/// the only part of feasibility the two check differently, so it is the only
+/// part written twice.
+pub(crate) fn dimensions_hold(m: &Model, route: &[NodeId], v: VehicleId) -> bool {
+    let veh = m.vehicle(v);
+    for d in m.dimensions() {
+        let cap = d.max_cumul[v.index()];
+        let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
+        if cumul > cap {
+            return false;
+        }
+        let mut prev = veh.start;
+        for &node in route.iter().chain(std::iter::once(&veh.end)) {
+            // Late is infeasible before the clamp; early waits via the clamp.
+            let arrive = cumul + m.eval(d.transit, prev, node);
+            if arrive > d.upper_bound[node.index()] {
+                return false;
+            }
+            cumul = arrive.max(d.lower_bound[node.index()]);
+            if cumul > cap {
+                return false;
+            }
+            prev = node;
+        }
+    }
+    true
 }
 
 // The linear scan stays here on purpose: `Search` runs the timestamped
