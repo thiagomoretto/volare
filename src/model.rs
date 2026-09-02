@@ -91,8 +91,8 @@ impl Model {
         &self.dimensions
     }
 
-    /// Read on every `eval_route` call, so it is cached rather than derived:
-    /// `!precedence.is_empty()` here measured ~5% slower on the X set.
+    /// Cached rather than derived: `eval_route` reads it per call, where
+    /// `!precedence.is_empty()` measured slower.
     #[inline]
     pub(crate) fn has_precedence(&self) -> bool {
         self.any_precedence
