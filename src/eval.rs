@@ -7,9 +7,13 @@ pub type Routes = Vec<Vec<NodeId>>;
 
 /// Cost of running `route` on vehicle `v`, or `None` if it is infeasible.
 ///
-/// The central primitive: construction and every operator route through here.
-/// Always true cost — guided local search layers its penalties on top of this
-/// in the search module, never inside this loop.
+/// Always true cost, and stateless. The solver itself evaluates through
+/// [`Search`](crate::Search), which caches what this recomputes and can carry
+/// a penalized objective. Keeping this one is what makes the cached path
+/// checkable: the two must agree on every route, and a test says so.
+///
+/// Reach for it when you want the cost of a route and nothing else — reporting
+/// a solution, checking a constraint, asserting in a test.
 ///
 /// Feasibility is a full forward pass, O(route length), recomputed on every
 /// call. That is the deliberate ceiling; to lift it, cache cumul prefixes
@@ -63,8 +67,9 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     Some(cost)
 }
 
-// ponytail: linear `route[..i]` scan. Swap for a timestamped position array
-// if dense pickup-and-delivery ever makes this the hot spot.
+// The linear scan stays here on purpose: `Search` runs the timestamped
+// version, and a reference implementation that shares the trick would not
+// catch the trick going wrong.
 fn precedence_holds(m: &Model, route: &[NodeId]) -> bool {
     route
         .iter()

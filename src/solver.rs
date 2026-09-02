@@ -1,9 +1,9 @@
-use std::collections::{HashMap, VecDeque};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::eval::{Routes, eval_route, eval_routes};
+use crate::eval::{Routes, eval_routes};
 use crate::model::Model;
+use crate::search::Search;
 use crate::types::{Cost, NodeId, VehicleId};
 
 /// The neighborhood operator that accepted an improving move.
@@ -132,10 +132,13 @@ pub fn solve_with(
     improve: Improve,
     mut log: impl FnMut(SearchEvent),
 ) -> Solution {
-    let mut sol = first_solution_with(m, construct, &mut log);
+    // One context for the whole solve, so construction's buffers are the
+    // descent's buffers.
+    let mut cx = Search::new(m);
+    let mut sol = first_solution_in(&mut cx, construct, &mut log);
     match improve {
-        Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
-        Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
+        Improve::HillClimb => descend(&mut cx, &mut sol, &mut log),
+        Improve::Gls { iters } => guided_in(&mut cx, &mut sol, iters, &mut log),
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
     Solution { routes: sol, cost }
@@ -148,24 +151,20 @@ pub fn solve_with(
 /// they are not — per-vehicle `forbid` sets make them differ — the caller
 /// retries with all of them (see `cheapest_insertion`). The unserved sink is
 /// always a candidate: dropping must be on offer even when it is empty.
-fn candidate_vehicles(m: &Model, sol: &Routes) -> Vec<usize> {
-    let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
+///
+/// Fills `out` rather than returning: the caller holds this list across
+/// evaluations, so it is the caller's buffer to own.
+fn candidate_vehicles(m: &Model, sol: &Routes, out: &mut Vec<usize>) {
+    out.clear();
+    out.extend((0..sol.len()).filter(|&i| !sol[i].is_empty()));
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
-        v.push(empty);
+        out.push(empty);
     }
     if let Some(uv) = m.unserved_vehicle()
-        && !v.contains(&uv.index())
+        && !out.contains(&uv.index())
     {
-        v.push(uv.index());
+        out.push(uv.index());
     }
-    v
-}
-
-fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>) {
-    out.clear();
-    out.extend_from_slice(&route[..pos]);
-    out.push(node);
-    out.extend_from_slice(&route[pos..]);
 }
 
 pub fn first_solution_with(
@@ -173,9 +172,17 @@ pub fn first_solution_with(
     construct: Construct,
     log: impl FnMut(SearchEvent),
 ) -> Routes {
+    first_solution_in(&mut Search::new(m), construct, log)
+}
+
+fn first_solution_in(
+    cx: &mut Search,
+    construct: Construct,
+    log: impl FnMut(SearchEvent),
+) -> Routes {
     match construct {
-        Construct::CheapestInsertion => cheapest_insertion(m, log),
-        Construct::GreedyRandomized { seed, k } => greedy_randomized(m, seed, k, log),
+        Construct::CheapestInsertion => insertion(cx, 1, 0, log),
+        Construct::GreedyRandomized { seed, k } => insertion(cx, k, seed, log),
     }
 }
 
@@ -184,17 +191,15 @@ type Insertion = (Cost, usize, usize);
 
 /// Cheapest feasible position for `u` in route `v`, or `None` if it has none.
 fn best_in_route(
-    m: &Model,
+    cx: &mut Search,
     sol: &Routes,
     cost: &[Cost],
     v: usize,
     u: NodeId,
-    scratch: &mut Vec<NodeId>,
 ) -> Option<Insertion> {
     let mut best: Option<Insertion> = None;
     for pos in 0..=sol[v].len() {
-        with_insert(&sol[v], pos, u, scratch);
-        let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
+        let Some(c) = cx.eval_splice(&sol[v], pos..pos, &[u], VehicleId(v as u32)) else {
             continue;
         };
         let delta = c - cost[v];
@@ -207,16 +212,15 @@ fn best_in_route(
 
 /// Cheapest feasible position for `u` across `vs`; ties go to the first `vs`.
 fn best_over(
-    m: &Model,
+    cx: &mut Search,
     sol: &Routes,
     cost: &[Cost],
     vs: &[usize],
     u: NodeId,
-    scratch: &mut Vec<NodeId>,
 ) -> Option<Insertion> {
     let mut best: Option<Insertion> = None;
     for &v in vs {
-        if let Some(c) = best_in_route(m, sol, cost, v, u, scratch)
+        if let Some(c) = best_in_route(cx, sol, cost, v, u)
             && best.is_none_or(|(bd, ..)| c.0 < bd)
         {
             best = Some(c);
@@ -247,18 +251,19 @@ impl Rng {
 
 /// Always the cheapest insertion on offer.
 pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
-    insertion(m, 1, 0, log)
+    insertion(&mut Search::new(m), 1, 0, log)
 }
 
 /// Draws from the `k` cheapest. Not a better first solution, a different one
 /// per seed, so callers can race several and keep the cheapest.
 pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
-    insertion(m, k, seed, log)
+    insertion(&mut Search::new(m), k, seed, log)
 }
 
 /// Insertion with a candidate list of width `k`. The cache below is
 /// indifferent to the draw: one route still grows per step.
-fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
+fn insertion(cx: &mut Search, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
+    let m = cx.model();
     let nv = m.vehicle_count();
     let mut rng = Rng(seed);
     let mut sol: Routes = vec![Vec::new(); nv];
@@ -267,7 +272,7 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         .map(NodeId)
         .filter(|&n| !m.is_terminal(n))
         .collect();
-    let mut scratch = Vec::new();
+    let mut cands = Vec::new();
 
     // Each node's cheapest insertion among the used routes, parallel to
     // `unrouted`. Empty candidates stay out: they cost one position to price,
@@ -282,7 +287,7 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
     while !unrouted.is_empty() {
         // `candidate_vehicles` keeps used routes in a fixed order, so a cached
         // entry stays comparable with a fresh one.
-        let cands = candidate_vehicles(m, &sol);
+        candidate_vehicles(m, &sol, &mut cands);
         let (used, empty): (Vec<usize>, Vec<usize>) =
             cands.iter().partition(|&&v| !sol[v].is_empty());
 
@@ -290,23 +295,21 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         for i in 0..unrouted.len() {
             let u = unrouted[i];
             if dirty[i] {
-                best[i] = best_over(m, &sol, &cost, &used, u, &mut scratch);
+                best[i] = best_over(cx, &sol, &cost, &used, u);
                 dirty[i] = false;
             } else if let Some(t) = changed {
                 let held = best[i];
-                let fresh_t = best_in_route(m, &sol, &cost, t, u, &mut scratch);
+                let fresh_t = best_in_route(cx, &sol, &cost, t, u);
                 // Every route but `t` was already worse and none of them
                 // moved, so only a `t` that got worse needs a full rescan.
                 best[i] = match (held, fresh_t) {
                     (Some((d, v, _)), Some(c)) if v == t && c.0 <= d => Some(c),
-                    (Some((_, v, _)), _) if v == t => {
-                        best_over(m, &sol, &cost, &used, u, &mut scratch)
-                    }
+                    (Some((_, v, _)), _) if v == t => best_over(cx, &sol, &cost, &used, u),
                     (_, Some(c)) if held.is_none_or(|b| c < b) => Some(c),
                     _ => held,
                 };
             }
-            let fresh = best_over(m, &sol, &cost, &empty, u, &mut scratch);
+            let fresh = best_over(cx, &sol, &cost, &empty, u);
             let node_best = match (best[i], fresh) {
                 (Some(b), Some(f)) if f.0 < b.0 => Some(f),
                 (Some(b), _) => Some(b),
@@ -324,7 +327,7 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         if widened {
             let all: Vec<usize> = (0..nv).collect();
             for (i, &u) in unrouted.iter().enumerate() {
-                if let Some(c) = best_over(m, &sol, &cost, &all, u, &mut scratch) {
+                if let Some(c) = best_over(cx, &sol, &cost, &all, u) {
                     ranked.push((c, i));
                 }
             }
@@ -375,18 +378,24 @@ pub fn local_search(m: &Model, sol: &mut Routes) {
 /// `local_search` reporting an `Improvement` per accepted move and a final
 /// `Done`.
 pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEvent)) {
-    descend(m, sol, eval_route, log)
+    descend(&mut Search::new(m), sol, log)
 }
 
-/// The descent itself, on whatever cost `p` defines. Public callers get true
-/// cost; only guided local search passes a non-empty table.
-fn descend<F>(m: &Model, sol: &mut Routes, eval: F, mut log: impl FnMut(SearchEvent))
-where
-    F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
-{
+/// The descent itself, on whatever objective `cx` currently carries. Public
+/// callers get true cost; only guided local search leaves penalties on it.
+fn descend(cx: &mut Search, sol: &mut Routes, mut log: impl FnMut(SearchEvent)) {
+    let m = cx.model();
     let mut cost: Vec<Cost> = (0..sol.len())
-        .map(|v| eval(m, &sol[v], VehicleId(v as u32)).expect("infeasible start solution"))
+        .map(|v| {
+            cx.eval(&sol[v], VehicleId(v as u32))
+                .expect("infeasible start solution")
+        })
         .collect();
+
+    // Held across evaluations, so they are the descent's buffers, not the
+    // context's.
+    let mut without = Vec::new();
+    let mut cands = Vec::new();
 
     let mut queued = vec![false; m.node_count()];
     let mut index = vec![u32::MAX; m.node_count()];
@@ -420,12 +429,13 @@ where
 
             // Cheapest operator first: relocate and swap each cost O(n) route
             // evaluations, 2-opt costs O(n^2).
-            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
+            let relocated = try_relocate(cx, sol, &mut cost, u, r, &mut without, &mut cands);
+            let (other, operator) = match relocated {
                 Some(v) => (Some(v), Operator::Relocate),
-                None => match try_swap(m, sol, &eval, &mut cost, u, r) {
+                None => match try_swap(cx, sol, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
                     None if !two_opt_dirty[r] => continue,
-                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (None, Operator::TwoOpt),
+                    None if try_two_opt(cx, sol, &mut cost, r) => (None, Operator::TwoOpt),
                     None => {
                         two_opt_dirty[r] = false;
                         continue;
@@ -458,7 +468,7 @@ where
                 if sol[r].is_empty() {
                     continue;
                 }
-                if let Some(v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
+                if let Some(v) = try_two_opt_star(cx, sol, &mut cost, r) {
                     two_opt_dirty[r] = true;
                     two_opt_dirty[v] = true;
                     improved = true;
@@ -483,98 +493,6 @@ where
 /// starting point for CVRP; higher diversifies harder, lower descends harder.
 const LAMBDA_NUMERATOR: Cost = 1;
 const LAMBDA_DENOMINATOR: Cost = 10;
-
-/// Arc penalties for guided local search, and the weight one penalty carries.
-///
-/// Owned by the search that is running, never by the `Model`: the model stays a
-/// pure description of the problem, shareable by `&` across concurrent solves.
-/// Created and dropped inside `gls`, so a penalty cannot outlive the search
-/// that made it.
-struct Penalties {
-    lambda: Cost,
-    map: HashMap<u64, Cost, BuildHasherDefault<ArcHasher>>,
-}
-
-impl Penalties {
-    /// An empty table whose penalties each cost `lambda`.
-    fn new(lambda: Cost) -> Self {
-        Penalties {
-            lambda,
-            map: HashMap::default(),
-        }
-    }
-
-    /// Weight applied to each penalty.
-    #[inline]
-    fn lambda(&self) -> Cost {
-        self.lambda
-    }
-
-    /// How many times arc `{a, b}` has been penalized.
-    #[inline]
-    fn arc(&self, a: NodeId, b: NodeId) -> Cost {
-        self.map.get(&arc_key(a, b)).copied().unwrap_or(0)
-    }
-
-    fn penalize(&mut self, a: NodeId, b: NodeId) {
-        *self.map.entry(arc_key(a, b)).or_insert(0) += 1;
-    }
-}
-
-/// Arcs are penalized as unordered pairs, packed into one `u64`. 2-opt reverses
-/// whole segments, so a directed key would make a reversal silently change the
-/// penalty it carries.
-#[inline]
-fn arc_key(a: NodeId, b: NodeId) -> u64 {
-    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-    (lo.0 as u64) << 32 | hi.0 as u64
-}
-
-/// Hasher for `Penalties`, and for nothing else.
-///
-/// GLS reads that map once per arc — it is the hottest line in the project.
-/// The default `RandomState` runs SipHash there, which a profile showed costing
-/// more than evaluating the arc it was pricing. The keys are packed node pairs,
-/// not adversarial input, so one multiply is enough.
-///
-/// The map is only ever read by key, never iterated, so nothing downstream can
-/// observe the change in hash order.
-#[derive(Default)]
-struct ArcHasher(u64);
-
-impl Hasher for ArcHasher {
-    #[inline]
-    fn write_u64(&mut self, n: u64) {
-        // Fibonacci hashing puts the entropy in the high bits; hashbrown picks
-        // its bucket from the low ones, so fold the high half back down.
-        let h = n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        self.0 = h ^ (h >> 32);
-    }
-
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, _: &[u8]) {
-        unreachable!("ArcHasher only ever hashes a packed arc key");
-    }
-}
-
-/// Penalized cost for the GLS descent: true cost and feasibility from
-/// `eval_route`, plus one `lambda` per penalty on the route's arcs. The second
-/// walk sums penalties only, so GLS pays for its own lookup.
-fn eval_route_penalized(m: &Model, p: &Penalties, route: &[NodeId], v: VehicleId) -> Option<Cost> {
-    let base = eval_route(m, route, v)?;
-    let veh = m.vehicle(v);
-    let mut prev = veh.start;
-    let mut extra = 0;
-    for &node in route.iter().chain(std::iter::once(&veh.end)) {
-        extra += p.arc(prev, node);
-        prev = node;
-    }
-    Some(base + p.lambda() * extra)
-}
 
 /// Guided local search. Descend, then repeatedly punish the arcs that look
 /// worst — expensive and not yet punished much — and descend again on the
@@ -604,9 +522,14 @@ pub fn guided_local_search_with(
     m: &Model,
     sol: &mut Routes,
     iters: usize,
-    mut log: impl FnMut(SearchEvent),
+    log: impl FnMut(SearchEvent),
 ) {
-    local_search(m, sol);
+    guided_in(&mut Search::new(m), sol, iters, log)
+}
+
+fn guided_in(cx: &mut Search, sol: &mut Routes, iters: usize, mut log: impl FnMut(SearchEvent)) {
+    let m = cx.model();
+    descend(cx, sol, |_| {});
 
     let mut best = sol.clone();
     let mut best_cost = eval_routes(m, sol).expect("infeasible local optimum");
@@ -624,18 +547,13 @@ pub fn guided_local_search_with(
         .filter(|(v, _)| m.unserved_vehicle() != Some(VehicleId(*v as u32)))
         .map(|(_, r)| r.len())
         .sum();
-    let lambda =
-        (LAMBDA_NUMERATOR * best_cost / (LAMBDA_DENOMINATOR * customers.max(1) as Cost)).max(1);
-    let mut penalties = Penalties::new(lambda);
+    cx.set_lambda(
+        (LAMBDA_NUMERATOR * best_cost / (LAMBDA_DENOMINATOR * customers.max(1) as Cost)).max(1),
+    );
 
     for iter in 1..=iters {
-        penalize_worst_arcs(m, &mut penalties, sol);
-        descend(
-            m,
-            sol,
-            |m, route, v| eval_route_penalized(m, &penalties, route, v),
-            |_| {},
-        );
+        penalize_worst_arcs(cx, sol);
+        descend(cx, sol, |_| {});
 
         // The descent just optimized penalized cost, which is not the cost we
         // rank solutions by. `eval_routes` is always the true one.
@@ -647,7 +565,7 @@ pub fn guided_local_search_with(
         }
     }
 
-    // `penalties` dies here; no caller can ever see a penalized cost.
+    // The penalties die with `cx`; no caller can ever see a penalized cost.
     *sol = best;
     log(SearchEvent::Done { cost: best_cost });
 }
@@ -657,7 +575,8 @@ pub fn guided_local_search_with(
 ///
 /// The comparison is cross-multiplied rather than divided: this repo has no
 /// floats, and ties must break the same way on every run.
-fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
+fn penalize_worst_arcs(cx: &mut Search, sol: &Routes) {
+    let m = cx.model();
     let mut worst: Vec<(NodeId, NodeId)> = Vec::new();
     // (arc cost, 1 + times penalized) of the best candidate so far.
     let mut top: Option<(Cost, Cost)> = None;
@@ -673,8 +592,11 @@ fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
         let veh = m.vehicle(VehicleId(v as u32));
         let mut prev = veh.start;
         for &node in route.iter().chain(std::iter::once(&veh.end)) {
+            // True arc cost, not `cx.arc`: utility must rank by what the arc
+            // really costs, and the penalty count is the other half of the
+            // ratio.
             let cost = m.eval(veh.cost_class, prev, node);
-            let seen = 1 + p.arc(prev, node);
+            let seen = 1 + cx.penalty(prev, node);
             let arc = if prev <= node {
                 (prev, node)
             } else {
@@ -705,34 +627,35 @@ fn penalize_worst_arcs(m: &Model, p: &mut Penalties, sol: &Routes) {
     worst.sort_unstable();
     worst.dedup();
     for (a, b) in worst {
-        p.penalize(a, b);
+        cx.penalize(a, b);
     }
 }
 
 /// Move `u` out of route `r` to its first improving position anywhere,
 /// including back into `r`. Returns the receiving vehicle.
-fn try_relocate<F>(
-    m: &Model,
+fn try_relocate(
+    cx: &mut Search,
     sol: &mut Routes,
-    eval: &F,
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
-) -> Option<usize>
-where
-    F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
-{
+    without: &mut Vec<NodeId>,
+    cands: &mut Vec<usize>,
+) -> Option<usize> {
     let at = sol[r].iter().position(|&x| x == u)?;
-    let mut without = sol[r].clone();
+    without.clear();
+    without.extend_from_slice(&sol[r]);
     without.remove(at);
-    let without_cost = eval(m, &without, VehicleId(r as u32))?;
+    let without_cost = cx.eval(without, VehicleId(r as u32))?;
 
-    let mut scratch = Vec::new();
-    for v in candidate_vehicles(m, sol) {
-        let base = if v == r { &without } else { &sol[v] };
+    // Probe first, commit after: the accepted route is still in the context,
+    // and `sol` cannot be written while a candidate base borrows it.
+    candidate_vehicles(cx.model(), sol, cands);
+    let mut accepted = None;
+    'search: for &v in cands.iter() {
+        let base: &[NodeId] = if v == r { without } else { &sol[v] };
         for pos in 0..=base.len() {
-            with_insert(base, pos, u, &mut scratch);
-            let Some(c) = eval(m, &scratch, VehicleId(v as u32)) else {
+            let Some(c) = cx.eval_splice(base, pos..pos, &[u], VehicleId(v as u32)) else {
                 continue;
             };
             let delta = if v == r {
@@ -741,20 +664,21 @@ where
                 (without_cost - cost[r]) + (c - cost[v])
             };
             if delta < 0 {
-                if v == r {
-                    sol[r].clone_from(&scratch);
-                    cost[r] = c;
-                } else {
-                    sol[r].clone_from(&without);
-                    cost[r] = without_cost;
-                    sol[v].clone_from(&scratch);
-                    cost[v] = c;
-                }
-                return Some(v);
+                accepted = Some((v, c));
+                break 'search;
             }
         }
     }
-    None
+
+    let (v, c) = accepted?;
+    if v != r {
+        sol[r].clone_from(without);
+        cost[r] = without_cost;
+    }
+    sol[v].clear();
+    sol[v].extend_from_slice(cx.spliced());
+    cost[v] = c;
+    Some(v)
 }
 
 /// Trade `u` for a customer on another route, first improving pair wins.
@@ -763,17 +687,13 @@ where
 /// Relocate cannot reach these moves when both routes are near capacity: moving
 /// a node either way overflows, and only an even trade fits. On the X set that
 /// is most of the search space, since the reference fleet is sized tight.
-fn try_swap<F>(
-    m: &Model,
+fn try_swap(
+    cx: &mut Search,
     sol: &mut Routes,
-    eval: F,
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
-) -> Option<usize>
-where
-    F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
-{
+) -> Option<usize> {
     let at = sol[r].iter().position(|&x| x == u)?;
     for v in 0..sol.len() {
         if v == r || sol[v].is_empty() {
@@ -783,10 +703,11 @@ where
             let w = sol[v][q];
             sol[r][at] = w;
             sol[v][q] = u;
-            // Not `zip`: it evaluates route `v` even when `r` is infeasible.
-            #[allow(clippy::manual_option_zip)]
-            let new = eval(m, &sol[r], VehicleId(r as u32))
-                .and_then(|a| eval(m, &sol[v], VehicleId(v as u32)).map(|b| (a, b)));
+            // Route `v` goes unevaluated when `r` is already infeasible.
+            let new = match cx.eval(&sol[r], VehicleId(r as u32)) {
+                Some(a) => cx.eval(&sol[v], VehicleId(v as u32)).map(|b| (a, b)),
+                None => None,
+            };
             match new {
                 Some((a, b)) if a + b < cost[r] + cost[v] => {
                     cost[r] = a;
@@ -804,15 +725,12 @@ where
 }
 
 /// Intra-route 2-opt: reverse one segment, keep it if it is cheaper.
-fn try_two_opt<F>(m: &Model, sol: &mut Routes, eval: F, cost: &mut [Cost], r: usize) -> bool
-where
-    F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
-{
+fn try_two_opt(cx: &mut Search, sol: &mut Routes, cost: &mut [Cost], r: usize) -> bool {
     let len = sol[r].len();
     for i in 0..len {
         for j in i + 1..len {
             sol[r][i..=j].reverse();
-            match eval(m, &sol[r], VehicleId(r as u32)) {
+            match cx.eval(&sol[r], VehicleId(r as u32)) {
                 Some(c) if c < cost[r] => {
                     cost[r] = c;
                     return true;
@@ -840,18 +758,14 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 /// Best-improvement, unlike the cheaper operators: a tail swap commits many
 /// customers at once, so taking the first improving cut drags the descent
 /// into noticeably worse local optima (measured on X-n143-k7).
-fn try_two_opt_star<F>(
-    m: &Model,
+fn try_two_opt_star(
+    cx: &mut Search,
     sol: &mut Routes,
-    eval: &F,
     cost: &mut [Cost],
     r: usize,
-) -> Option<usize>
-where
-    F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
-{
+) -> Option<usize> {
+    let m = cx.model();
     let veh_r = m.vehicle(VehicleId(r as u32));
-    // let lambda = p.lambda();
     let mut best: Option<TwoOptStarMove> = None;
     for v in 0..sol.len() {
         if v == r || sol[v].is_empty() {
@@ -865,19 +779,13 @@ where
                 if tail_r.is_none() && tail_v.is_none() {
                     continue; // both tails empty: no arc changes
                 }
-                let arc = |class: usize, a: NodeId, b: NodeId| {
-                    // FIXME: delta ranks by true arc cost; penalties only steer acceptance.
-                    // let mut c = m.eval(class, a, b);
-                    // if lambda != 0 {
-                    //     c += lambda * p.arc(a, b);
-                    // }
-                    // c
-                    m.eval(class, a, b)
-                };
-                let out = arc(veh_r.cost_class, sol[r][i], tail_r.unwrap_or(veh_r.end))
-                    + arc(veh_v.cost_class, sol[v][j], tail_v.unwrap_or(veh_v.end));
-                let into = arc(veh_r.cost_class, sol[r][i], tail_v.unwrap_or(veh_r.end))
-                    + arc(veh_v.cost_class, sol[v][j], tail_r.unwrap_or(veh_v.end));
+                // `cx.arc`, not `m.eval`: under GLS the delta must rank on the
+                // same objective the acceptance below runs on, or the best
+                // candidate by one measure loses to a worse one by the other.
+                let out = cx.arc(veh_r.cost_class, sol[r][i], tail_r.unwrap_or(veh_r.end))
+                    + cx.arc(veh_v.cost_class, sol[v][j], tail_v.unwrap_or(veh_v.end));
+                let into = cx.arc(veh_r.cost_class, sol[r][i], tail_v.unwrap_or(veh_r.end))
+                    + cx.arc(veh_v.cost_class, sol[v][j], tail_r.unwrap_or(veh_v.end));
                 if into - out >= best.as_ref().map_or(0, |b| b.0) {
                     continue;
                 }
@@ -891,9 +799,10 @@ where
                     .chain(&sol[r][i + 1..])
                     .copied()
                     .collect();
-                #[allow(clippy::manual_option_zip)]
-                let new = eval(m, &new_r, VehicleId(r as u32))
-                    .and_then(|a| eval(m, &new_v, VehicleId(v as u32)).map(|b| (a, b)));
+                let new = match cx.eval(&new_r, VehicleId(r as u32)) {
+                    Some(a) => cx.eval(&new_v, VehicleId(v as u32)).map(|b| (a, b)),
+                    None => None,
+                };
                 if let Some((a, b)) = new
                     && a + b < cost[r] + cost[v]
                 {
@@ -913,7 +822,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::visits_all_nodes;
+    use crate::eval::{eval_route, visits_all_nodes};
     use crate::model::ModelBuilder;
 
     /// Depot at 0, customers 1..=5 on a line; arc cost is line distance.
@@ -1077,12 +986,13 @@ mod tests {
 
         // East rides with west, north with south: both routes cross the map.
         let mut sol = vec![vec![NodeId(1), NodeId(3)], vec![NodeId(2), NodeId(4)]];
+        let mut cx = Search::new(&m);
         let mut cost: Vec<Cost> = (0..2)
-            .map(|v| eval_route(&m, &sol[v], VehicleId(v as u32)).unwrap())
+            .map(|v| cx.eval(&sol[v], VehicleId(v as u32)).unwrap())
             .collect();
         assert_eq!(cost.iter().sum::<Cost>(), 80);
 
-        let v = try_two_opt_star(&m, &mut sol, &eval_route, &mut cost, 0);
+        let v = try_two_opt_star(&mut cx, &mut sol, &mut cost, 0);
         assert_eq!(v, Some(1));
         assert_eq!(
             sol,
@@ -1090,10 +1000,7 @@ mod tests {
         );
         assert_eq!(cost.iter().sum::<Cost>(), 68);
         // A local optimum of this neighborhood: a second call finds nothing.
-        assert_eq!(
-            try_two_opt_star(&m, &mut sol, &eval_route, &mut cost, 0),
-            None
-        );
+        assert_eq!(try_two_opt_star(&mut cx, &mut sol, &mut cost, 0), None);
     }
 
     /// A node forbidden on one vehicle must land on the other, and stay
