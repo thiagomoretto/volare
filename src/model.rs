@@ -64,6 +64,7 @@ pub struct Model {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     unserved: Option<VehicleId>,
+    precedence: Vec<Vec<NodeId>>,
 }
 
 impl Model {
@@ -85,6 +86,17 @@ impl Model {
     #[inline]
     pub fn dimensions(&self) -> &[Dimension] {
         &self.dimensions
+    }
+
+    #[inline]
+    pub(crate) fn has_precedence(&self) -> bool {
+        !self.precedence.is_empty()
+    }
+
+    /// Nodes that must be served after `n` when a route holds both.
+    #[inline]
+    pub fn successors(&self, n: NodeId) -> &[NodeId] {
+        self.precedence.get(n.index()).map_or(&[], Vec::as_slice)
     }
 
     #[inline]
@@ -111,6 +123,7 @@ pub struct ModelBuilder {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     drops: Vec<(NodeId, Cost)>,
+    precedence: Vec<Vec<NodeId>>,
 }
 
 impl ModelBuilder {
@@ -192,6 +205,26 @@ impl ModelBuilder {
         self.drops.push((n, penalty));
     }
 
+    /// Serve `before` ahead of `after` on any route that holds both.
+    ///
+    /// Ordering only: a pair split across two vehicles is unconstrained.
+    /// Pinning both to one vehicle is a separate constraint, and the two
+    /// together are what a pickup-and-delivery pair needs.
+    ///
+    /// Cycles are legal — `a` before `b` before `a` just means the two never
+    /// share a route — so nothing is checked for one here.
+    pub fn precede(&mut self, before: NodeId, after: NodeId) {
+        assert!(
+            before.index() < self.node_count && after.index() < self.node_count,
+            "precedence node out of range"
+        );
+        assert!(before != after, "node {} cannot precede itself", before.0);
+        if self.precedence.is_empty() {
+            self.precedence = vec![Vec::new(); self.node_count];
+        }
+        self.precedence[before.index()].push(after);
+    }
+
     pub fn build(mut self) -> Model {
         assert!(!self.vehicles.is_empty(), "model has no vehicles");
 
@@ -235,12 +268,27 @@ impl ModelBuilder {
                 self.vehicles.len()
             );
         }
-        Model {
+        let model = Model {
             node_count: self.node_count,
             evaluators: self.evaluators,
             dimensions: self.dimensions,
             vehicles: self.vehicles,
             unserved,
+            precedence: self.precedence,
+        };
+
+        for (i, succ) in model.precedence.iter().enumerate() {
+            if succ.is_empty() {
+                continue;
+            }
+            for &n in std::iter::once(&NodeId(i as u32)).chain(succ) {
+                assert!(
+                    !model.is_terminal(n),
+                    "precedence on node {} is vacuous: it is a vehicle terminal",
+                    n.0
+                );
+            }
         }
+        model
     }
 }

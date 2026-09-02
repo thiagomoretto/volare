@@ -389,6 +389,10 @@ where
         .collect();
 
     let mut queued = vec![false; m.node_count()];
+    let mut index = vec![u32::MAX; m.node_count()];
+    // Route-level don't-look bit: 2-opt takes a route and ignores the popped
+    // node, so without this it rescans one route once per node in it.
+    let mut two_opt_dirty = vec![true; sol.len()];
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
@@ -397,7 +401,6 @@ where
         let mut queue: VecDeque<NodeId> = sol.iter().flatten().copied().collect();
         // node -> route, rebuilt per sweep; a move re-stamps only the routes
         // it touched. Replaces an O(n) route scan per queue pop.
-        let mut index = vec![u32::MAX; m.node_count()];
         for (r, route) in sol.iter().enumerate() {
             for &n in route {
                 index[n.index()] = r as u32;
@@ -417,12 +420,16 @@ where
 
             // Cheapest operator first: relocate and swap each cost O(n) route
             // evaluations, 2-opt costs O(n^2).
-            let (touched, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
-                Some(v) => (vec![r, v], Operator::Relocate),
+            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
+                Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(m, sol, &eval, &mut cost, u, r) {
-                    Some(v) => (vec![r, v], Operator::Swap),
-                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (vec![r], Operator::TwoOpt),
-                    None => continue,
+                    Some(v) => (Some(v), Operator::Swap),
+                    None if !two_opt_dirty[r] => continue,
+                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (None, Operator::TwoOpt),
+                    None => {
+                        two_opt_dirty[r] = false;
+                        continue;
+                    }
                 },
             };
             improved = true;
@@ -430,7 +437,8 @@ where
                 operator,
                 cost: cost.iter().sum(),
             });
-            for t in touched {
+            for t in [Some(r), other.filter(|&v| v != r)].into_iter().flatten() {
+                two_opt_dirty[t] = true;
                 for &n in &sol[t] {
                     index[n.index()] = t as u32;
                     if !queued[n.index()] {
@@ -445,12 +453,14 @@ where
             // The fine operators are at a fixpoint: one 2-opt* pass over all
             // routes. Firing it here instead of per node keeps the big tail
             // swaps from disrupting routes that relocate would have fixed for
-            // less (X-n143-k7 regressed 14.5% -> 21.1% the other way).
+            // less (X-n143-k7 regressed sharply the other way).
             for r in 0..sol.len() {
                 if sol[r].is_empty() {
                     continue;
                 }
-                if let Some(_v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
+                if let Some(v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
+                    two_opt_dirty[r] = true;
+                    two_opt_dirty[v] = true;
                     improved = true;
                     log(SearchEvent::Improvement {
                         operator: Operator::TwoOptStar,
@@ -575,8 +585,10 @@ fn eval_route_penalized(m: &Model, p: &Penalties, route: &[NodeId], v: VehicleId
 /// No RNG, so this stays as deterministic as the hill climb it wraps.
 ///
 /// ponytail: every iteration restarts a full local search from scratch. Waking
-/// only the nodes touched by the arcs just penalized is the 3-5x speedup —
-/// add it when the iteration count needs to go past a few hundred.
+/// only the nodes touched by the arcs just penalized is the win, but seeding
+/// the queue alone is capped by `descend`'s outer re-sweep, which starts a
+/// full sweep anyway — tighten that first, then seed. Both are worth it when
+/// the iteration count needs to go past a few hundred.
 pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
     guided_local_search_with(m, sol, iters, |_| {})
 }
@@ -771,8 +783,10 @@ where
             let w = sol[v][q];
             sol[r][at] = w;
             sol[v][q] = u;
-            let new =
-                eval(m, &sol[r], VehicleId(r as u32)).zip(eval(m, &sol[v], VehicleId(v as u32)));
+            // Not `zip`: it evaluates route `v` even when `r` is infeasible.
+            #[allow(clippy::manual_option_zip)]
+            let new = eval(m, &sol[r], VehicleId(r as u32))
+                .and_then(|a| eval(m, &sol[v], VehicleId(v as u32)).map(|b| (a, b)));
             match new {
                 Some((a, b)) if a + b < cost[r] + cost[v] => {
                     cost[r] = a;
@@ -825,7 +839,7 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 ///
 /// Best-improvement, unlike the cheaper operators: a tail swap commits many
 /// customers at once, so taking the first improving cut drags the descent
-/// into noticeably worse local optima (X-n143-k7 went 14.5% -> 21.1% gap).
+/// into noticeably worse local optima (measured on X-n143-k7).
 fn try_two_opt_star<F>(
     m: &Model,
     sol: &mut Routes,
@@ -877,8 +891,9 @@ where
                     .chain(&sol[r][i + 1..])
                     .copied()
                     .collect();
-                let new =
-                    eval(m, &new_r, VehicleId(r as u32)).zip(eval(m, &new_v, VehicleId(v as u32)));
+                #[allow(clippy::manual_option_zip)]
+                let new = eval(m, &new_r, VehicleId(r as u32))
+                    .and_then(|a| eval(m, &new_v, VehicleId(v as u32)).map(|b| (a, b)));
                 if let Some((a, b)) = new
                     && a + b < cost[r] + cost[v]
                 {
