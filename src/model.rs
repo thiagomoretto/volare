@@ -64,7 +64,7 @@ pub struct Model {
     dimensions: Vec<Dimension>,
     vehicles: Vec<Vehicle>,
     unserved: Option<VehicleId>,
-    /// Successors by node, empty for a model that declared no ordering.
+    /// Successors by node; empty when no ordering was declared.
     precedence: Vec<Vec<NodeId>>,
 }
 
@@ -92,7 +92,7 @@ impl Model {
     /// The gate in `eval_route`: a model without ordering pays one
     /// `is_empty` per call and never walks the route twice.
     #[inline]
-    pub fn has_precedence(&self) -> bool {
+    pub(crate) fn has_precedence(&self) -> bool {
         !self.precedence.is_empty()
     }
 
@@ -225,10 +225,7 @@ impl ModelBuilder {
         if self.precedence.is_empty() {
             self.precedence = vec![Vec::new(); self.node_count];
         }
-        let succ = &mut self.precedence[before.index()];
-        if !succ.contains(&after) {
-            succ.push(after);
-        }
+        self.precedence[before.index()].push(after);
     }
 
     pub fn build(mut self) -> Model {
@@ -264,21 +261,6 @@ impl ModelBuilder {
             Some(id)
         };
 
-        // A terminal never appears in a route, so ordering against one can
-        // never fire. Silently vacuous is the worse failure.
-        for (i, succ) in self.precedence.iter().enumerate() {
-            if succ.is_empty() {
-                continue;
-            }
-            for &n in std::iter::once(&NodeId(i as u32)).chain(succ) {
-                assert!(
-                    !self.vehicles.iter().any(|v| v.start == n || v.end == n),
-                    "precedence on node {} is vacuous: it is a vehicle terminal",
-                    n.0
-                );
-            }
-        }
-
         for d in &self.dimensions {
             assert_eq!(
                 d.max_cumul.len(),
@@ -289,13 +271,28 @@ impl ModelBuilder {
                 self.vehicles.len()
             );
         }
-        Model {
+        let model = Model {
             node_count: self.node_count,
             evaluators: self.evaluators,
             dimensions: self.dimensions,
             vehicles: self.vehicles,
             unserved,
             precedence: self.precedence,
+        };
+
+        // A terminal never appears in a route, so such a pair could never fire.
+        for (i, succ) in model.precedence.iter().enumerate() {
+            if succ.is_empty() {
+                continue;
+            }
+            for &n in std::iter::once(&NodeId(i as u32)).chain(succ) {
+                assert!(
+                    !model.is_terminal(n),
+                    "precedence on node {} is vacuous: it is a vehicle terminal",
+                    n.0
+                );
+            }
         }
+        model
     }
 }
