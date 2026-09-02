@@ -254,7 +254,7 @@ fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
 /// the scenario is feasible by construction.
 fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
     let n = inst.coords.len();
-    let coords = std::sync::Arc::new(inst.coords.clone());
+    let coords = inst.coords.clone();
     b.dimension(
         "time",
         move |from, to| volare::cvrplib::euc_2d(coords[from.index()], coords[to.index()]),

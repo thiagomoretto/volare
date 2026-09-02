@@ -343,6 +343,9 @@ where
         .collect();
 
     let mut queued = vec![false; m.node_count()];
+    let mut index = vec![u32::MAX; m.node_count()];
+    // A route only stops being 2-opt clean when a move touches it.
+    let mut two_opt_clean = vec![false; sol.len()];
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
@@ -351,7 +354,6 @@ where
         let mut queue: VecDeque<NodeId> = sol.iter().flatten().copied().collect();
         // node -> route, rebuilt per sweep; a move re-stamps only the routes
         // it touched. Replaces an O(n) route scan per queue pop.
-        let mut index = vec![u32::MAX; m.node_count()];
         for (r, route) in sol.iter().enumerate() {
             for &n in route {
                 index[n.index()] = r as u32;
@@ -371,12 +373,16 @@ where
 
             // Cheapest operator first: relocate and swap each cost O(n) route
             // evaluations, 2-opt costs O(n^2).
-            let (touched, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
-                Some(v) => (vec![r, v], Operator::Relocate),
+            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
+                Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(m, sol, &eval, &mut cost, u, r) {
-                    Some(v) => (vec![r, v], Operator::Swap),
-                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (vec![r], Operator::TwoOpt),
-                    None => continue,
+                    Some(v) => (Some(v), Operator::Swap),
+                    None if two_opt_clean[r] => continue,
+                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (None, Operator::TwoOpt),
+                    None => {
+                        two_opt_clean[r] = true;
+                        continue;
+                    }
                 },
             };
             improved = true;
@@ -384,7 +390,8 @@ where
                 operator,
                 cost: cost.iter().sum(),
             });
-            for t in touched {
+            for t in [Some(r), other.filter(|&v| v != r)].into_iter().flatten() {
+                two_opt_clean[t] = false;
                 for &n in &sol[t] {
                     index[n.index()] = t as u32;
                     if !queued[n.index()] {
@@ -404,7 +411,9 @@ where
                 if sol[r].is_empty() {
                     continue;
                 }
-                if let Some(_v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
+                if let Some(v) = try_two_opt_star(m, sol, &eval, &mut cost, r) {
+                    two_opt_clean[r] = false;
+                    two_opt_clean[v] = false;
                     improved = true;
                     log(SearchEvent::Improvement {
                         operator: Operator::TwoOptStar,
@@ -725,8 +734,11 @@ where
             let w = sol[v][q];
             sol[r][at] = w;
             sol[v][q] = u;
-            let new =
-                eval(m, &sol[r], VehicleId(r as u32)).zip(eval(m, &sol[v], VehicleId(v as u32)));
+            // Not `zip`: that evaluates both routes even when `r` is already
+            // infeasible, which at tight capacity is most rejected swaps.
+            #[allow(clippy::manual_option_zip)]
+            let new = eval(m, &sol[r], VehicleId(r as u32))
+                .and_then(|a| eval(m, &sol[v], VehicleId(v as u32)).map(|b| (a, b)));
             match new {
                 Some((a, b)) if a + b < cost[r] + cost[v] => {
                     cost[r] = a;
@@ -831,8 +843,9 @@ where
                     .chain(&sol[r][i + 1..])
                     .copied()
                     .collect();
-                let new =
-                    eval(m, &new_r, VehicleId(r as u32)).zip(eval(m, &new_v, VehicleId(v as u32)));
+                #[allow(clippy::manual_option_zip)]
+                let new = eval(m, &new_r, VehicleId(r as u32))
+                    .and_then(|a| eval(m, &new_v, VehicleId(v as u32)).map(|b| (a, b)));
                 if let Some((a, b)) = new
                     && a + b < cost[r] + cost[v]
                 {
