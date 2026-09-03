@@ -148,17 +148,28 @@ pub fn solve_with(
 /// they are not — per-vehicle `forbid` sets make them differ — the caller
 /// retries with all of them (see `cheapest_insertion`). The unserved sink is
 /// always a candidate: dropping must be on offer even when it is empty.
-fn candidate_vehicles(m: &Model, sol: &Routes) -> Vec<usize> {
-    let mut v: Vec<usize> = (0..sol.len()).filter(|&i| !sol[i].is_empty()).collect();
+fn candidate_vehicles(m: &Model, sol: &Routes, out: &mut Vec<usize>) {
+    out.clear();
+    out.extend((0..sol.len()).filter(|&i| !sol[i].is_empty()));
     if let Some(empty) = (0..sol.len()).find(|&i| sol[i].is_empty()) {
-        v.push(empty);
+        out.push(empty);
     }
     if let Some(uv) = m.unserved_vehicle()
-        && !v.contains(&uv.index())
+        && !out.contains(&uv.index())
     {
-        v.push(uv.index());
+        out.push(uv.index());
     }
-    v
+}
+
+/// Buffers the operators reuse across calls, one per descent.
+#[derive(Default)]
+struct Scratch {
+    /// The moving node's own route with that node taken out.
+    without: Vec<NodeId>,
+    /// A route with the moving node inserted, the one being priced.
+    candidate: Vec<NodeId>,
+    /// Vehicles worth trying, from `candidate_vehicles`.
+    vehicles: Vec<usize>,
 }
 
 fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>) {
@@ -268,6 +279,7 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         .filter(|&n| !m.is_terminal(n))
         .collect();
     let mut scratch = Vec::new();
+    let mut cands = Vec::new();
 
     // Each node's cheapest insertion among the used routes, parallel to
     // `unrouted`. Empty candidates stay out: they cost one position to price,
@@ -282,15 +294,18 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
     while !unrouted.is_empty() {
         // `candidate_vehicles` keeps used routes in a fixed order, so a cached
         // entry stays comparable with a fresh one.
-        let cands = candidate_vehicles(m, &sol);
-        let (used, empty): (Vec<usize>, Vec<usize>) =
-            cands.iter().partition(|&&v| !sol[v].is_empty());
+        candidate_vehicles(m, &sol, &mut cands);
+        let split = cands
+            .iter()
+            .position(|&v| sol[v].is_empty())
+            .unwrap_or(cands.len());
+        let (used, empty) = cands.split_at(split);
 
         ranked.clear();
         for i in 0..unrouted.len() {
             let u = unrouted[i];
             if dirty[i] {
-                best[i] = best_over(m, &sol, &cost, &used, u, &mut scratch);
+                best[i] = best_over(m, &sol, &cost, used, u, &mut scratch);
                 dirty[i] = false;
             } else if let Some(t) = changed {
                 let held = best[i];
@@ -300,13 +315,13 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
                 best[i] = match (held, fresh_t) {
                     (Some((d, v, _)), Some(c)) if v == t && c.0 <= d => Some(c),
                     (Some((_, v, _)), _) if v == t => {
-                        best_over(m, &sol, &cost, &used, u, &mut scratch)
+                        best_over(m, &sol, &cost, used, u, &mut scratch)
                     }
                     (_, Some(c)) if held.is_none_or(|b| c < b) => Some(c),
                     _ => held,
                 };
             }
-            let fresh = best_over(m, &sol, &cost, &empty, u, &mut scratch);
+            let fresh = best_over(m, &sol, &cost, empty, u, &mut scratch);
             let node_best = match (best[i], fresh) {
                 (Some(b), Some(f)) if f.0 < b.0 => Some(f),
                 (Some(b), _) => Some(b),
@@ -393,6 +408,7 @@ where
     // Route-level don't-look bit: 2-opt takes a route and ignores the popped
     // node, so without this it rescans one route once per node in it.
     let mut two_opt_dirty = vec![true; sol.len()];
+    let mut sx = Scratch::default();
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
@@ -420,7 +436,7 @@ where
 
             // Cheapest operator first: relocate and swap each cost O(n) route
             // evaluations, 2-opt costs O(n^2).
-            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r) {
+            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r, &mut sx) {
                 Some(v) => (Some(v), Operator::Relocate),
                 None => match try_swap(m, sol, &eval, &mut cost, u, r) {
                     Some(v) => (Some(v), Operator::Swap),
@@ -718,21 +734,22 @@ fn try_relocate<F>(
     cost: &mut [Cost],
     u: NodeId,
     r: usize,
+    sx: &mut Scratch,
 ) -> Option<usize>
 where
     F: Fn(&Model, &[NodeId], VehicleId) -> Option<Cost>,
 {
     let at = sol[r].iter().position(|&x| x == u)?;
-    let mut without = sol[r].clone();
-    without.remove(at);
-    let without_cost = eval(m, &without, VehicleId(r as u32))?;
+    sx.without.clone_from(&sol[r]);
+    sx.without.remove(at);
+    let without_cost = eval(m, &sx.without, VehicleId(r as u32))?;
 
-    let mut scratch = Vec::new();
-    for v in candidate_vehicles(m, sol) {
-        let base = if v == r { &without } else { &sol[v] };
+    candidate_vehicles(m, sol, &mut sx.vehicles);
+    for &v in sx.vehicles.iter() {
+        let base = if v == r { &sx.without } else { &sol[v] };
         for pos in 0..=base.len() {
-            with_insert(base, pos, u, &mut scratch);
-            let Some(c) = eval(m, &scratch, VehicleId(v as u32)) else {
+            with_insert(base, pos, u, &mut sx.candidate);
+            let Some(c) = eval(m, &sx.candidate, VehicleId(v as u32)) else {
                 continue;
             };
             let delta = if v == r {
@@ -742,12 +759,12 @@ where
             };
             if delta < 0 {
                 if v == r {
-                    sol[r].clone_from(&scratch);
+                    sol[r].clone_from(&sx.candidate);
                     cost[r] = c;
                 } else {
-                    sol[r].clone_from(&without);
+                    sol[r].clone_from(&sx.without);
                     cost[r] = without_cost;
-                    sol[v].clone_from(&scratch);
+                    sol[v].clone_from(&sx.candidate);
                     cost[v] = c;
                 }
                 return Some(v);
