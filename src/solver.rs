@@ -172,11 +172,11 @@ struct Scratch {
     vehicles: Vec<usize>,
 }
 
-fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>) {
+/// `node` in front of `route`; callers slide it forward one swap per position.
+fn with_front(route: &[NodeId], node: NodeId, out: &mut Vec<NodeId>) {
     out.clear();
-    out.extend_from_slice(&route[..pos]);
     out.push(node);
-    out.extend_from_slice(&route[pos..]);
+    out.extend_from_slice(route);
 }
 
 pub fn first_solution_with(
@@ -203,8 +203,11 @@ fn best_in_route(
     scratch: &mut Vec<NodeId>,
 ) -> Option<Insertion> {
     let mut best: Option<Insertion> = None;
+    with_front(&sol[v], u, scratch);
     for pos in 0..=sol[v].len() {
-        with_insert(&sol[v], pos, u, scratch);
+        if pos > 0 {
+            scratch.swap(pos - 1, pos);
+        }
         let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
             continue;
         };
@@ -747,8 +750,11 @@ where
     candidate_vehicles(m, sol, &mut sx.vehicles);
     for &v in sx.vehicles.iter() {
         let base = if v == r { &sx.without } else { &sol[v] };
+        with_front(base, u, &mut sx.candidate);
         for pos in 0..=base.len() {
-            with_insert(base, pos, u, &mut sx.candidate);
+            if pos > 0 {
+                sx.candidate.swap(pos - 1, pos);
+            }
             let Some(c) = eval(m, &sx.candidate, VehicleId(v as u32)) else {
                 continue;
             };
