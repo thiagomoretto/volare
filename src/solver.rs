@@ -164,9 +164,12 @@ fn candidate_vehicles(m: &Model, sol: &Routes, out: &mut Vec<usize>) {
 /// Buffers the operators reuse across calls, one per descent.
 #[derive(Default)]
 struct Scratch {
+    /// The moving node's own route with that node taken out.
     without: Vec<NodeId>,
-    with: Vec<NodeId>,
-    cands: Vec<usize>,
+    /// A route with the moving node inserted, the one being priced.
+    candidate: Vec<NodeId>,
+    /// Vehicles worth trying, from `candidate_vehicles`.
+    vehicles: Vec<usize>,
 }
 
 fn with_insert(route: &[NodeId], pos: usize, node: NodeId, out: &mut Vec<NodeId>) {
@@ -741,12 +744,12 @@ where
     sx.without.remove(at);
     let without_cost = eval(m, &sx.without, VehicleId(r as u32))?;
 
-    candidate_vehicles(m, sol, &mut sx.cands);
-    for &v in sx.cands.iter() {
+    candidate_vehicles(m, sol, &mut sx.vehicles);
+    for &v in sx.vehicles.iter() {
         let base = if v == r { &sx.without } else { &sol[v] };
         for pos in 0..=base.len() {
-            with_insert(base, pos, u, &mut sx.with);
-            let Some(c) = eval(m, &sx.with, VehicleId(v as u32)) else {
+            with_insert(base, pos, u, &mut sx.candidate);
+            let Some(c) = eval(m, &sx.candidate, VehicleId(v as u32)) else {
                 continue;
             };
             let delta = if v == r {
@@ -756,12 +759,12 @@ where
             };
             if delta < 0 {
                 if v == r {
-                    sol[r].clone_from(&sx.with);
+                    sol[r].clone_from(&sx.candidate);
                     cost[r] = c;
                 } else {
                     sol[r].clone_from(&sx.without);
                     cost[r] = without_cost;
-                    sol[v].clone_from(&sx.with);
+                    sol[v].clone_from(&sx.candidate);
                     cost[v] = c;
                 }
                 return Some(v);
