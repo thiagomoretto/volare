@@ -66,20 +66,19 @@ pub(super) fn descend(
             // Cheapest operator first: relocate and swap cost O(n) route
             // evaluations, or-opt O(n) across all vehicles, 2-opt O(n^2).
             // Or-opt moves pairs; a single-node chain is relocate.
-            let (other, operator) = if let Some(v) =
-                try_relocate(m, sol, &eval, &mut cost, u, r, &mut sx)
-            {
-                (Some(v), Operator::Relocate)
-            } else if let Some(v) = try_swap(m, sol, &eval, &mut cost, u, r) {
-                (Some(v), Operator::Swap)
-            } else if two_opt_dirty[r] && try_two_opt(m, sol, &eval, &mut cost, r) {
-                (None, Operator::TwoOpt)
-            } else if let Some(v) = try_or_opt(m, sol, &eval, &mut cost, u, r, &mut sx) {
-                (Some(v), Operator::OrOpt)
-            } else {
-                two_opt_dirty[r] = false;
-                continue;
-            };
+            let (other, operator) =
+                if let Some(v) = try_relocate(m, sol, &eval, &mut cost, u, r, &mut sx) {
+                    (Some(v), Operator::Relocate)
+                } else if let Some(v) = try_swap(m, sol, &eval, &mut cost, u, r) {
+                    (Some(v), Operator::Swap)
+                } else if two_opt_dirty[r] && try_two_opt(m, sol, &eval, &mut cost, r) {
+                    (None, Operator::TwoOpt)
+                } else if let Some(v) = try_or_opt(m, sol, &eval, &mut cost, u, r, &mut sx) {
+                    (Some(v), Operator::OrOpt)
+                } else {
+                    two_opt_dirty[r] = false;
+                    continue;
+                };
             improved = true;
             log(SearchEvent::Improvement {
                 operator,
