@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use super::operators::{try_relocate, try_swap, try_two_opt, try_two_opt_star};
+use super::operators::{try_or_opt, try_relocate, try_swap, try_two_opt, try_two_opt_star};
 use super::{Operator, RouteEval, Scratch, SearchEvent};
 use crate::eval::{Routes, eval_route};
 use crate::model::Model;
@@ -63,20 +63,22 @@ pub(super) fn descend(
             // the u32::MAX sentinel.
             let r = index[u.index()] as usize;
 
-            // Cheapest operator first: relocate and swap each cost O(n) route
-            // evaluations, 2-opt costs O(n^2).
-            let (other, operator) = match try_relocate(m, sol, &eval, &mut cost, u, r, &mut sx) {
-                Some(v) => (Some(v), Operator::Relocate),
-                None => match try_swap(m, sol, &eval, &mut cost, u, r) {
-                    Some(v) => (Some(v), Operator::Swap),
-                    None if !two_opt_dirty[r] => continue,
-                    None if try_two_opt(m, sol, &eval, &mut cost, r) => (None, Operator::TwoOpt),
-                    None => {
-                        two_opt_dirty[r] = false;
-                        continue;
-                    }
-                },
-            };
+            // Cheapest operator first: relocate and swap cost O(n) route
+            // evaluations, or-opt O(n) across all vehicles, 2-opt O(n^2).
+            // Or-opt moves pairs; a single-node chain is relocate.
+            let (other, operator) =
+                if let Some(v) = try_relocate(m, sol, &eval, &mut cost, u, r, &mut sx) {
+                    (Some(v), Operator::Relocate)
+                } else if let Some(v) = try_swap(m, sol, &eval, &mut cost, u, r) {
+                    (Some(v), Operator::Swap)
+                } else if two_opt_dirty[r] && try_two_opt(m, sol, &eval, &mut cost, r) {
+                    (None, Operator::TwoOpt)
+                } else if let Some(v) = try_or_opt(m, sol, &eval, &mut cost, u, r, &mut sx) {
+                    (Some(v), Operator::OrOpt)
+                } else {
+                    two_opt_dirty[r] = false;
+                    continue;
+                };
             improved = true;
             log(SearchEvent::Improvement {
                 operator,
