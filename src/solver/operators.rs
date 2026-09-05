@@ -52,6 +52,80 @@ pub(super) fn try_relocate(
     None
 }
 
+/// Move the pair starting at `u` out of route `r` to its best position
+/// anywhere, including back into `r`. Returns the receiving vehicle.
+///
+/// This is relocate generalized to two nodes (or-opt with chain length 2;
+/// length 1 is relocate, and chains of 3 measured worse than they helped).
+/// Intra-route it reaches orderings 2-opt cannot: a chain moves without
+/// reversal, while 2-opt only reverses. Inter-route it moves a pair whose
+/// single nodes fit nowhere — a tight time-window chain, or two units of
+/// demand where one does not fit.
+///
+/// Best-improvement, unlike relocate: a chain commits two customers at
+/// once, and first-improvement drags the descent into worse local optima
+/// (same lesson as 2-opt*, measured on X-n101-k25).
+pub(super) fn try_or_opt(
+    m: &Model,
+    sol: &mut Routes,
+    eval: &impl RouteEval,
+    cost: &mut [Cost],
+    u: NodeId,
+    r: usize,
+    sx: &mut Scratch,
+) -> Option<usize> {
+    const CHAIN: usize = 2;
+    let at = sol[r].iter().position(|&x| x == u)?;
+    if at + CHAIN > sol[r].len() {
+        return None;
+    }
+    sx.chain.clear();
+    sx.chain.extend_from_slice(&sol[r][at..at + CHAIN]);
+    sx.without.clone_from(&sol[r]);
+    sx.without.drain(at..at + CHAIN);
+    let without_cost = eval(m, &sx.without, VehicleId(r as u32))?;
+
+    // (delta, receiving vehicle, cost of the receiving route, new route)
+    let mut best: Option<(Cost, usize, Cost, Vec<NodeId>)> = None;
+    candidate_vehicles(m, sol, &mut sx.vehicles);
+    for &v in sx.vehicles.iter() {
+        let base = if v == r { &sx.without } else { &sol[v] };
+        sx.candidate.clear();
+        sx.candidate.extend_from_slice(&sx.chain);
+        sx.candidate.extend_from_slice(base);
+        let base_len = base.len();
+        for pos in 0..=base_len {
+            if pos > 0 {
+                // Slide the chain one node right: the node after the chain
+                // wraps to its front.
+                sx.candidate[pos - 1..pos + CHAIN].rotate_right(1);
+            }
+            let Some(c) = eval(m, &sx.candidate, VehicleId(v as u32)) else {
+                continue;
+            };
+            let delta = if v == r {
+                c - cost[r]
+            } else {
+                (without_cost - cost[r]) + (c - cost[v])
+            };
+            if delta < 0 && best.as_ref().is_none_or(|b| delta < b.0) {
+                best = Some((delta, v, c, sx.candidate.clone()));
+            }
+        }
+    }
+    let (_, v, c, candidate) = best?;
+    if v == r {
+        sol[r] = candidate;
+        cost[r] = c;
+    } else {
+        sol[r].clone_from(&sx.without);
+        cost[r] = without_cost;
+        cost[v] = c;
+        sol[v] = candidate;
+    }
+    Some(v)
+}
+
 /// Trade `u` for a customer on another route, first improving pair wins.
 /// Returns the other vehicle.
 ///
