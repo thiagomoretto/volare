@@ -100,8 +100,8 @@ pub fn cvrp_model(inst: &Instance, fleet: usize) -> Model {
     cvrp_model_with(inst, fleet, |_| {})
 }
 
-/// `cvrp_model`, with a hook that runs after the vehicles exist and before
-/// the model is built — where per-vehicle tweaks like `forbid` belong.
+/// `cvrp_model`, with a hook that runs once the vehicles and the `demand`
+/// dimension exist — where `forbid` or a soft cap on `demand` belong.
 pub fn cvrp_model_with(
     inst: &Instance,
     fleet: usize,
@@ -121,12 +121,12 @@ pub fn cvrp_model_with(
     for _ in 0..fleet {
         b.vehicle(inst.depot, inst.depot, cost_class);
     }
-    configure(&mut b);
     b.dimension(
         "demand",
         move |_from, to| demands[to.index()],
         vec![inst.capacity; fleet],
     );
+    configure(&mut b);
     b.build()
 }
 

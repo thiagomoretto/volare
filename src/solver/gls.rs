@@ -3,7 +3,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use super::SearchEvent;
 use super::descent::{descend, local_search};
-use crate::eval::{Routes, eval_route, eval_routes};
+use crate::eval::{Routes, eval_route, eval_route_split, eval_routes};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -136,24 +136,29 @@ pub fn guided_local_search_with(
 ) {
     local_search(m, sol);
 
+    // Dropped nodes are not customers: they must not dilute lambda.
     let mut best = sol.clone();
-    let mut best_cost = eval_routes(m, sol).expect("infeasible local optimum");
+    let mut best_cost = 0;
+    let (mut customers, mut arc_cost) = (0usize, 0);
+    for (v, route) in sol.iter().enumerate() {
+        let v = VehicleId(v as u32);
+        let (arcs, soft) = eval_route_split(m, route, v).expect("infeasible local optimum");
+        best_cost += arcs + soft;
+        if m.unserved_vehicle() != Some(v) {
+            customers += route.len();
+            arc_cost += arcs;
+        }
+    }
     log(SearchEvent::GuidedBest {
         iter: 0,
         cost: best_cost,
     });
 
     // Scale one penalty into arc-cost units, so lambda * penalty is comparable
-    // to the distances the operators are trading against it.
-    // Dropped nodes are not customers: they must not dilute lambda.
-    let customers: usize = sol
-        .iter()
-        .enumerate()
-        .filter(|(v, _)| m.unserved_vehicle() != Some(VehicleId(*v as u32)))
-        .map(|(_, r)| r.len())
-        .sum();
+    // to the distances the operators are trading against it. Soft-bound
+    // penalties are not distances, so they stay out.
     let lambda =
-        (LAMBDA_NUMERATOR * best_cost / (LAMBDA_DENOMINATOR * customers.max(1) as Cost)).max(1);
+        (LAMBDA_NUMERATOR * arc_cost / (LAMBDA_DENOMINATOR * customers.max(1) as Cost)).max(1);
     let mut penalties = Penalties::new(lambda);
 
     for iter in 1..=iters {
