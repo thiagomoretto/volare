@@ -20,6 +20,14 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     Some(arcs + soft)
 }
 
+/// `eval_route` with every soft bound treated as hard. A route that would
+/// pay any penalty is infeasible here.
+#[inline]
+pub fn eval_route_tight(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
+    let (arcs, soft) = eval_route_split(m, route, v)?;
+    (soft == 0).then_some(arcs)
+}
+
 /// `eval_route` with the arc cost and the soft-bound penalty kept apart.
 pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Cost, Cost)> {
     // An unused vehicle is free, it never leaves the depot.

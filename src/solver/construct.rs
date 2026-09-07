@@ -1,7 +1,11 @@
 use super::{Construct, SearchEvent, candidate_vehicles, with_front};
-use crate::eval::{Routes, eval_route};
+use crate::eval::{Routes, eval_route, eval_route_tight};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
+
+/// The route cost construction prices insertions with: `eval_route_tight`
+/// while every node still fits under the soft bounds, `eval_route` after.
+type Eval = fn(&Model, &[NodeId], VehicleId) -> Option<Cost>;
 
 pub fn first_solution_with(
     m: &Model,
@@ -11,6 +15,7 @@ pub fn first_solution_with(
     match construct {
         Construct::CheapestInsertion => cheapest_insertion(m, log),
         Construct::GreedyRandomized { seed, k } => greedy_randomized(m, seed, k, log),
+        Construct::TightInsertion { seed, k } => tight_insertion(m, seed, k, log),
     }
 }
 
@@ -20,6 +25,7 @@ type Insertion = (Cost, usize, usize);
 /// Cheapest feasible position for `u` in route `v`, or `None` if it has none.
 fn best_in_route(
     m: &Model,
+    eval: Eval,
     sol: &Routes,
     cost: &[Cost],
     v: usize,
@@ -32,7 +38,7 @@ fn best_in_route(
         if pos > 0 {
             scratch.swap(pos - 1, pos);
         }
-        let Some(c) = eval_route(m, scratch, VehicleId(v as u32)) else {
+        let Some(c) = eval(m, scratch, VehicleId(v as u32)) else {
             continue;
         };
         let delta = c - cost[v];
@@ -46,6 +52,7 @@ fn best_in_route(
 /// Cheapest feasible position for `u` across `vs`; ties go to the first `vs`.
 fn best_over(
     m: &Model,
+    eval: Eval,
     sol: &Routes,
     cost: &[Cost],
     vs: &[usize],
@@ -54,7 +61,7 @@ fn best_over(
 ) -> Option<Insertion> {
     let mut best: Option<Insertion> = None;
     for &v in vs {
-        if let Some(c) = best_in_route(m, sol, cost, v, u, scratch)
+        if let Some(c) = best_in_route(m, eval, sol, cost, v, u, scratch)
             && best.is_none_or(|(bd, ..)| c.0 < bd)
         {
             best = Some(c);
@@ -85,18 +92,30 @@ impl Rng {
 
 /// Always the cheapest insertion on offer.
 pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
-    insertion(m, 1, 0, log)
+    insertion(m, 1, 0, false, log)
 }
 
 /// Draws from the `k` cheapest. Not a better first solution, a different one
 /// per seed, so callers can race several and keep the cheapest.
 pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
-    insertion(m, k, seed, log)
+    insertion(m, k, seed, false, log)
+}
+
+/// `greedy_randomized` with the soft bounds held hard until a node fits
+/// nowhere under them; see `Construct::TightInsertion`.
+pub fn tight_insertion(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
+    insertion(m, k, seed, true, log)
 }
 
 /// Insertion with a candidate list of width `k`. The cache below is
 /// indifferent to the draw: one route still grows per step.
-fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
+fn insertion(
+    m: &Model,
+    k: usize,
+    seed: u64,
+    mut tight: bool,
+    mut log: impl FnMut(SearchEvent),
+) -> Routes {
     let nv = m.vehicle_count();
     let mut rng = Rng(seed);
     let mut sol: Routes = vec![Vec::new(); nv];
@@ -117,6 +136,9 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
     let mut changed: Option<usize> = None;
     // Each node's best this round, the draw picks from here. Reused.
     let mut ranked: Vec<(Insertion, usize)> = Vec::new();
+    // ponytail: once loosened it stays loose; re-tightening per node costs a
+    // full rescan of the cache each time.
+    let mut eval: Eval = if tight { eval_route_tight } else { eval_route };
 
     while !unrouted.is_empty() {
         // `candidate_vehicles` keeps used routes in a fixed order, so a cached
@@ -132,23 +154,23 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         for i in 0..unrouted.len() {
             let u = unrouted[i];
             if dirty[i] {
-                best[i] = best_over(m, &sol, &cost, used, u, &mut scratch);
+                best[i] = best_over(m, eval, &sol, &cost, used, u, &mut scratch);
                 dirty[i] = false;
             } else if let Some(t) = changed {
                 let held = best[i];
-                let fresh_t = best_in_route(m, &sol, &cost, t, u, &mut scratch);
+                let fresh_t = best_in_route(m, eval, &sol, &cost, t, u, &mut scratch);
                 // Every route but `t` was already worse and none of them
                 // moved, so only a `t` that got worse needs a full rescan.
                 best[i] = match (held, fresh_t) {
                     (Some((d, v, _)), Some(c)) if v == t && c.0 <= d => Some(c),
                     (Some((_, v, _)), _) if v == t => {
-                        best_over(m, &sol, &cost, used, u, &mut scratch)
+                        best_over(m, eval, &sol, &cost, used, u, &mut scratch)
                     }
                     (_, Some(c)) if held.is_none_or(|b| c < b) => Some(c),
                     _ => held,
                 };
             }
-            let fresh = best_over(m, &sol, &cost, empty, u, &mut scratch);
+            let fresh = best_over(m, eval, &sol, &cost, empty, u, &mut scratch);
             let node_best = match (best[i], fresh) {
                 (Some(b), Some(f)) if f.0 < b.0 => Some(f),
                 (Some(b), _) => Some(b),
@@ -166,10 +188,17 @@ fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -
         if widened {
             let all: Vec<usize> = (0..nv).collect();
             for (i, &u) in unrouted.iter().enumerate() {
-                if let Some(c) = best_over(m, &sol, &cost, &all, u, &mut scratch) {
+                if let Some(c) = best_over(m, eval, &sol, &cost, &all, u, &mut scratch) {
                     ranked.push((c, i));
                 }
             }
+        }
+
+        if ranked.is_empty() && tight {
+            tight = false;
+            eval = eval_route;
+            dirty.iter_mut().for_each(|d| *d = true);
+            continue;
         }
 
         if ranked.is_empty() {

@@ -11,7 +11,7 @@ mod operators;
 #[cfg(test)]
 mod tests;
 
-pub use construct::{cheapest_insertion, first_solution_with, greedy_randomized};
+pub use construct::{cheapest_insertion, first_solution_with, greedy_randomized, tight_insertion};
 pub use descent::{local_search, local_search_with};
 pub use gls::{guided_local_search, guided_local_search_with};
 
@@ -97,6 +97,15 @@ pub enum Construct {
     /// Each step draws from the `k` cheapest, not the first. Same seed, same
     /// solution. `k = 1` is `CheapestInsertion`.
     GreedyRandomized {
+        seed: u64,
+        k: usize,
+    },
+    /// `GreedyRandomized` with the soft bounds held hard for as long as every
+    /// node still fits under them, then released. The first solution pays no
+    /// penalty when a penalty-free one is reachable. Fits overload-style
+    /// softness; a window-style one tends to open extra routes instead of
+    /// buying a cheap late slot.
+    TightInsertion {
         seed: u64,
         k: usize,
     },

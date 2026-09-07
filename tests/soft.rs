@@ -88,3 +88,50 @@ fn permutations(items: &mut [NodeId], k: usize, visit: &mut impl FnMut(&[NodeId]
         items.swap(k, i);
     }
 }
+
+/// Tight construction pays no penalty while a penalty-free placement exists,
+/// and still routes a node that has none.
+#[test]
+fn tight_construction_starts_penalty_free_and_falls_back() {
+    use volare::solver::first_solution_with;
+
+    let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+    let mut b = ModelBuilder::new(6);
+    let cost = b.cost_class(dist);
+    for _ in 0..3 {
+        b.vehicle(NodeId(0), NodeId(0), cost);
+    }
+    b.dimension(
+        "load",
+        |_, to| if to == NodeId(0) { 0 } else { 1 },
+        vec![5; 3],
+    );
+    // Two per vehicle is cheap to break, so the priced greedy overloads one
+    // route; tight construction spreads the five parcels over three.
+    for v in 0..3 {
+        b.soft_max_cumul("load", VehicleId(v), 2, 1);
+    }
+    let m = b.build();
+    let priced = first_solution_with(&m, Construct::CheapestInsertion, |_| {});
+    let tight = first_solution_with(&m, Construct::TightInsertion { seed: 0, k: 1 }, |_| {});
+    assert!(
+        !violations(&m, &priced).is_empty(),
+        "priced greedy overloads"
+    );
+    assert!(
+        violations(&m, &tight).is_empty(),
+        "tight construction does not"
+    );
+
+    // Node 5 can never meet a soft close of zero: tight construction has to
+    // loosen for it rather than leave it unrouted.
+    let mut b = ModelBuilder::new(6);
+    let cost = b.cost_class(dist);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.dimension("time", dist, vec![i64::MAX]);
+    b.soft_upper_bound("time", NodeId(5), 0, 1);
+    let m = b.build();
+    let tight = first_solution_with(&m, Construct::TightInsertion { seed: 0, k: 1 }, |_| {});
+    assert_eq!(tight[0].len(), 5, "every node routed");
+    assert_eq!(violations(&m, &tight).len(), 1);
+}

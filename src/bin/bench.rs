@@ -17,6 +17,7 @@
 //!   cargo run --release --bin bench -- --scenario=precede # ordering within a route
 //!   cargo run --release --bin bench -- --scenario=softtw  # priced lateness, no hard close
 //!   cargo run --release --bin bench -- --scenario=softcap # a tenth over capacity, priced
+//!   cargo run --release --bin bench -- --scenario=softcap --tight  # soft bounds hard while constructing
 //!
 //! A `--scenario` picks a model variant instead of the plain CVRP: a new
 //! constraint is a `*_model` transform plus a `check_*` arm, not a binary
@@ -54,6 +55,8 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--gls=")?.parse().ok());
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
+    // `--tight` builds a scenario's first solution with `Construct::TightInsertion`.
+    let tight = args.iter().any(|a| a == "--tight");
     // N randomized solves, cheapest wins. `--rcl=K` is the draw width.
     let restarts: usize = args
         .iter()
@@ -98,7 +101,7 @@ fn main() {
             restarts,
             rcl,
         ),
-        Some(name) => bench_scenario(name, &instances, log_search, gls),
+        Some(name) => bench_scenario(name, &instances, log_search, gls, tight),
     }
 }
 
@@ -209,7 +212,13 @@ fn bench_reference(
     }
 }
 
-fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
+fn bench_scenario(
+    scenario: &str,
+    instances: &[PathBuf],
+    log_search: bool,
+    gls: Option<usize>,
+    tight: bool,
+) {
     println!(
         "{:<14} {:>5} {:>5} {:>9} {:>9} {:>7} {:>7}",
         "instance", "n", "note", "open", "scenario", "delta%", "ms"
@@ -221,7 +230,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         let mut log = logger(log_search);
 
         let started = Instant::now();
-        let open = solve(&cvrp_model(&inst, fleet), gls, &mut log).cost;
+        let open = solve(&cvrp_model(&inst, fleet), gls, false, &mut log).cost;
         let mut note = String::new();
         let model = cvrp_model_with(&inst, fleet, |b| match scenario {
             "forbid" => forbid_model(&inst, b, &mut note),
@@ -232,7 +241,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "softcap" => softcap_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
-        let sol = solve(&model, gls, &mut log);
+        let sol = solve(&model, gls, tight, &mut log);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
 
         // The whole point of the run: the constraint held.
@@ -470,12 +479,17 @@ fn free_fleet(inst: &Instance) -> usize {
     inst.coords.len() - 1
 }
 
-fn solve(m: &Model, gls: Option<usize>, log: &mut dyn FnMut(SearchEvent)) -> Solution {
+fn solve(m: &Model, gls: Option<usize>, tight: bool, log: &mut dyn FnMut(SearchEvent)) -> Solution {
     let improve = match gls {
         Some(iters) => Improve::Gls { iters },
         None => Improve::HillClimb,
     };
-    solve_with(m, Construct::CheapestInsertion, improve, log)
+    let construct = if tight {
+        Construct::TightInsertion { seed: 0, k: 1 }
+    } else {
+        Construct::CheapestInsertion
+    };
+    solve_with(m, construct, improve, log)
 }
 
 fn logger(on: bool) -> Box<dyn FnMut(SearchEvent)> {
