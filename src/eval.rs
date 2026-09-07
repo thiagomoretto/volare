@@ -22,7 +22,7 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
 
 /// `eval_route` with the arc cost and the soft-bound penalty kept apart.
 pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Cost, Cost)> {
-    // ponytail: an unused vehicle is free, it never leaves the depot.
+    // An unused vehicle is free, it never leaves the depot.
     if route.is_empty() {
         return Some((0, 0));
     }
