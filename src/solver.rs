@@ -20,6 +20,7 @@ pub use gls::{guided_local_search, guided_local_search_with};
 pub enum Operator {
     Relocate,
     Swap,
+    OrOpt,
     TwoOpt,
     TwoOptStar,
 }
@@ -29,6 +30,7 @@ impl std::fmt::Display for Operator {
         match self {
             Operator::Relocate => write!(f, "relocate"),
             Operator::Swap => write!(f, "swap"),
+            Operator::OrOpt => write!(f, "or-opt"),
             Operator::TwoOpt => write!(f, "2-opt"),
             Operator::TwoOptStar => write!(f, "2-opt*"),
         }
@@ -180,7 +182,9 @@ fn candidate_vehicles(m: &Model, sol: &Routes, out: &mut Vec<usize>) {
 struct Scratch {
     /// The moving node's own route with that node taken out.
     without: Vec<NodeId>,
-    /// A route with the moving node inserted, the one being priced.
+    /// The moving chain, copied out of its route.
+    chain: Vec<NodeId>,
+    /// A route with the moving node or chain inserted, the one being priced.
     candidate: Vec<NodeId>,
     /// Vehicles worth trying, from `candidate_vehicles`.
     vehicles: Vec<usize>,

@@ -1,4 +1,4 @@
-use super::operators::try_two_opt_star;
+use super::operators::{try_or_opt, try_two_opt_star};
 use super::*;
 use crate::eval::{eval_route, visits_all_nodes};
 use crate::model::ModelBuilder;
@@ -179,6 +179,41 @@ fn two_opt_star_repartitions_routes() {
     // A local optimum of this neighborhood: a second call finds nothing.
     assert_eq!(
         try_two_opt_star(&m, &mut sol, &eval_route, &mut cost, 0),
+        None
+    );
+}
+
+/// A pair cheaper two stops over, while every single-node move breaks even
+/// or worsens: the chain is the smallest move that helps.
+#[test]
+fn or_opt_moves_a_chain_relocate_cannot() {
+    let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+    let mut b = ModelBuilder::new(5);
+    let cost = b.cost_class(dist);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.dimension(
+        "load",
+        |_from, to| if to == NodeId(0) { 0 } else { 1 },
+        vec![4, 4],
+    );
+    let m = b.build();
+
+    // 0->4->2->3->1->0 costs 100; the pair (2,3) belongs up front.
+    let mut sol = vec![vec![NodeId(4), NodeId(2), NodeId(3), NodeId(1)], vec![]];
+    let mut cost: Vec<Cost> = (0..2)
+        .map(|v| eval_route(&m, &sol[v], VehicleId(v as u32)).unwrap_or(0))
+        .collect();
+    assert_eq!(cost[0], 100);
+
+    let mut sx = Scratch::default();
+    let v = try_or_opt(&m, &mut sol, &eval_route, &mut cost, NodeId(2), 0, &mut sx);
+    assert_eq!(v, Some(0));
+    assert_eq!(sol[0], vec![NodeId(2), NodeId(3), NodeId(4), NodeId(1)]);
+    assert_eq!(cost[0], 80);
+    // A local optimum of this neighborhood: a second call finds nothing.
+    assert_eq!(
+        try_or_opt(&m, &mut sol, &eval_route, &mut cost, NodeId(2), 0, &mut sx),
         None
     );
 }
