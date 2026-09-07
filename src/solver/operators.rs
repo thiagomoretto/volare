@@ -209,6 +209,11 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 ///
 /// The delta ranks candidates by true arc cost even under guided local
 /// search; penalties only steer which candidates `eval` accepts.
+///
+/// The filter sees arc cost only, so a soft-bound penalty change never
+/// ranks here. Crediting a pair of routes with the penalty they carry lets
+/// penalty-only swaps through but does not lower the priced objective: an
+/// overload spread across many routes is not undone by one tail swap.
 pub(super) fn try_two_opt_star(
     m: &Model,
     sol: &mut Routes,

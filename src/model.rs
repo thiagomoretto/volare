@@ -44,6 +44,9 @@ impl Vehicle {
 /// the vehicle but not against the node. Neither expresses the other. With
 /// negative transits (pickup and delivery) `max_cumul` binds at the mid-route
 /// peak, where an end-node bound would not.
+///
+/// Each upper bound has a soft twin: past it the route pays per unit of
+/// excess, past the hard one it is infeasible. `i64::MAX` is off.
 pub struct Dimension {
     pub name: String,
     /// Index into the evaluator table.
@@ -52,6 +55,13 @@ pub struct Dimension {
     pub start_cumul: i64,
     pub lower_bound: Vec<i64>,
     pub upper_bound: Vec<i64>,
+    /// Per node. Lateness propagates to the next arrival.
+    pub soft_upper_bound: Vec<i64>,
+    pub soft_upper_bound_cost: Vec<Cost>,
+    /// Per vehicle, on the route's peak. Not per node, or pickup and
+    /// delivery would pay one overload at every later stop.
+    pub soft_max_cumul: Vec<i64>,
+    pub soft_max_cumul_cost: Vec<Cost>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -163,6 +173,7 @@ impl ModelBuilder {
         max_cumul: Vec<i64>,
     ) -> &mut Self {
         self.evaluators.push(Box::new(transit));
+        let vehicles = max_cumul.len();
         self.dimensions.push(Dimension {
             name: name.to_string(),
             transit: self.evaluators.len() - 1,
@@ -170,20 +181,58 @@ impl ModelBuilder {
             start_cumul: 0,
             lower_bound: vec![0; self.node_count],
             upper_bound: vec![i64::MAX; self.node_count],
+            soft_upper_bound: vec![i64::MAX; self.node_count],
+            soft_upper_bound_cost: vec![0; self.node_count],
+            soft_max_cumul: vec![i64::MAX; vehicles],
+            soft_max_cumul_cost: vec![0; vehicles],
         });
         self
+    }
+
+    fn dimension_mut(&mut self, name: &str) -> &mut Dimension {
+        self.dimensions
+            .iter_mut()
+            .find(|d| d.name == name)
+            .expect("unknown dimension")
     }
 
     /// Set the window `[lb, ub]` on the cumul of dimension `name` at node `n`.
     pub fn cumul_bounds(&mut self, name: &str, n: NodeId, lb: i64, ub: i64) {
         assert!(n.index() < self.node_count, "node out of range");
-        let d = self
-            .dimensions
-            .iter_mut()
-            .find(|d| d.name == name)
-            .expect("unknown dimension");
+        let d = self.dimension_mut(name);
         d.lower_bound[n.index()] = lb;
         d.upper_bound[n.index()] = ub;
+    }
+
+    /// Replace the hard cap `dimension` gave vehicle `v`.
+    pub fn max_cumul(&mut self, name: &str, v: VehicleId, cap: i64) {
+        assert!(v.index() < self.vehicles.len(), "vehicle out of range");
+        self.dimension_mut(name).max_cumul[v.index()] = cap;
+    }
+
+    /// Arriving at `n` past `ub` costs `cost_per_unit` per unit, in arc-cost
+    /// units. The hard close from `cumul_bounds` still applies above it.
+    pub fn soft_upper_bound(&mut self, name: &str, n: NodeId, ub: i64, cost_per_unit: Cost) {
+        assert!(n.index() < self.node_count, "node out of range");
+        assert!(
+            cost_per_unit >= 0,
+            "a negative lateness cost rewards being late"
+        );
+        let d = self.dimension_mut(name);
+        d.soft_upper_bound[n.index()] = ub;
+        d.soft_upper_bound_cost[n.index()] = cost_per_unit;
+    }
+
+    /// Vehicle `v` may peak past `cap` for `cost_per_unit` per unit.
+    pub fn soft_max_cumul(&mut self, name: &str, v: VehicleId, cap: i64, cost_per_unit: Cost) {
+        assert!(v.index() < self.vehicles.len(), "vehicle out of range");
+        assert!(
+            cost_per_unit >= 0,
+            "a negative overload cost rewards overloading"
+        );
+        let d = self.dimension_mut(name);
+        d.soft_max_cumul[v.index()] = cap;
+        d.soft_max_cumul_cost[v.index()] = cost_per_unit;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
@@ -254,6 +303,8 @@ impl ModelBuilder {
             });
             for d in &mut self.dimensions {
                 d.max_cumul.push(i64::MAX);
+                d.soft_max_cumul.push(i64::MAX);
+                d.soft_max_cumul_cost.push(0);
             }
             Some(id)
         };

@@ -15,6 +15,8 @@
 //!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!   cargo run --release --bin bench -- --scenario=precede # ordering within a route
+//!   cargo run --release --bin bench -- --scenario=softtw  # priced lateness, no hard close
+//!   cargo run --release --bin bench -- --scenario=softcap # a tenth over capacity, priced
 //!
 //! A `--scenario` picks a model variant instead of the plain CVRP: a new
 //! constraint is a `*_model` transform plus a `check_*` arm, not a binary
@@ -28,7 +30,7 @@ use std::time::Instant;
 
 use volare::Construct;
 use volare::cvrplib::{Instance, cvrp_model, cvrp_model_with, parse_sol};
-use volare::eval::{eval_route, eval_routes, visits_all_nodes};
+use volare::eval::{eval_route, eval_routes, violations, visits_all_nodes};
 use volare::model::{Model, ModelBuilder};
 use volare::solver::{
     Improve, SearchEvent, Solution, first_solution_with, guided_local_search_with,
@@ -63,8 +65,11 @@ fn main() {
         .unwrap_or(3);
 
     assert!(
-        scenario.is_none_or(|s| matches!(s, "forbid" | "drop" | "tw" | "precede")),
-        "unknown --scenario (have: forbid, drop, tw, precede)"
+        scenario.is_none_or(|s| matches!(
+            s,
+            "forbid" | "drop" | "tw" | "precede" | "softtw" | "softcap"
+        )),
+        "unknown --scenario (have: forbid, drop, tw, precede, softtw, softcap)"
     );
     assert!(
         !(write_baseline && scenario.is_some()),
@@ -221,8 +226,10 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         let model = cvrp_model_with(&inst, fleet, |b| match scenario {
             "forbid" => forbid_model(&inst, b, &mut note),
             "drop" => drop_model(&inst, b, &mut note),
-            "tw" => tw_model(&inst, b, &mut note),
+            "tw" => tw_model(&inst, b, &mut note, false),
             "precede" => precede_model(&inst, b, &mut note),
+            "softtw" => tw_model(&inst, b, &mut note, true),
+            "softcap" => softcap_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
         let sol = solve(&model, gls, &mut log);
@@ -243,6 +250,11 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "precede" => {
                 let bound = check_precede(&model, &sol, &inst.name);
                 note = format!("{note}->{bound}");
+            }
+            "softtw" | "softcap" => {
+                let broken = violations(&model, &sol.routes);
+                let penalty: i64 = broken.iter().map(|b| b.penalty).sum();
+                note = format!("{note}->{}/{penalty}", broken.len());
             }
             _ => unreachable!("gated in main"),
         }
@@ -299,7 +311,10 @@ fn drop_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
 /// any possible arrival (triangle inequality), so early visits wait; close
 /// at `3t + 10`, so a single-customer route always fits. With a free fleet
 /// the scenario is feasible by construction.
-fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
+///
+/// `soft`: no hard close, a soft one at `2t`, two units of distance per
+/// unit late. The note then becomes `windowed->late/penalty`.
+fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String, soft: bool) {
     let n = inst.coords.len();
     let coords = inst.coords.clone();
     b.dimension(
@@ -312,11 +327,33 @@ fn tw_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
         let node = NodeId(c);
         if c % 5 == 0 && node != inst.depot {
             let t = inst.dist(inst.depot, node);
-            b.cumul_bounds("time", node, 3 * t / 2, 3 * t + 10);
+            if soft {
+                b.cumul_bounds("time", node, 3 * t / 2, i64::MAX);
+                b.soft_upper_bound("time", node, 2 * t, 2);
+            } else {
+                b.cumul_bounds("time", node, 3 * t / 2, 3 * t + 10);
+            }
             windowed += 1;
         }
     }
     *note = windowed.to_string();
+}
+
+/// A tenth over capacity, priced so the whole slack costs about one depot
+/// round trip. The note becomes `vehicles->overloaded/penalty`.
+fn softcap_model(inst: &Instance, b: &mut ModelBuilder, note: &mut String) {
+    let fleet = free_fleet(inst);
+    let customers = (0..inst.coords.len() as u32)
+        .map(NodeId)
+        .filter(|&c| c != inst.depot);
+    let (count, total) = customers.fold((0, 0), |(n, d), c| (n + 1, d + inst.dist(inst.depot, c)));
+    let slack = (inst.capacity / 10).max(1);
+    let per_unit = (2 * total / count / slack).max(1);
+    for v in 0..fleet as u32 {
+        b.max_cumul("demand", VehicleId(v), inst.capacity + slack);
+        b.soft_max_cumul("demand", VehicleId(v), inst.capacity, per_unit);
+    }
+    *note = fleet.to_string();
 }
 
 /// Every sixth customer is ordered against its nearest neighbour, farther

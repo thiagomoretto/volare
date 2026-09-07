@@ -1,4 +1,4 @@
-use crate::model::Model;
+use crate::model::{Dimension, Model, Vehicle};
 use crate::types::{Cost, NodeId, VehicleId};
 
 /// Routes indexed by vehicle. Each holds the visits *between* the vehicle's
@@ -14,10 +14,17 @@ pub type Routes = Vec<Vec<NodeId>>;
 /// Feasibility is a full forward pass, O(route length), recomputed on every
 /// call. That is the deliberate ceiling; to lift it, cache cumul prefixes
 /// per route.
+#[inline]
 pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
-    // ponytail: an unused vehicle is free, it never leaves the depot.
+    let (arcs, soft) = eval_route_split(m, route, v)?;
+    Some(arcs + soft)
+}
+
+/// `eval_route` with the arc cost and the soft-bound penalty kept apart.
+pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Cost, Cost)> {
+    // An unused vehicle is free, it never leaves the depot.
     if route.is_empty() {
-        return Some(0);
+        return Some((0, 0));
     }
     let veh = m.vehicle(v);
 
@@ -27,29 +34,16 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         return None;
     }
 
+    let mut soft = 0;
     // A dropped node's window or ordering must not block dropping it.
     if m.unserved_vehicle() != Some(v) {
         if m.has_precedence() && !precedence_holds(m, route) {
             return None;
         }
         for d in m.dimensions() {
-            let cap = d.max_cumul[v.index()];
-            let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
-            if cumul > cap {
+            // Per-dimension weighting of the prices belongs here.
+            if !walk(m, d, route, veh, v, |_, _, cost| soft += cost) {
                 return None;
-            }
-            let mut prev = veh.start;
-            for &node in route.iter().chain(std::iter::once(&veh.end)) {
-                // Late is infeasible before the clamp; early waits via the clamp.
-                let arrive = cumul + m.eval(d.transit, prev, node);
-                if arrive > d.upper_bound[node.index()] {
-                    return None;
-                }
-                cumul = arrive.max(d.lower_bound[node.index()]);
-                if cumul > cap {
-                    return None;
-                }
-                prev = node;
             }
         }
     }
@@ -60,7 +54,94 @@ pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
         cost += m.eval(veh.cost_class, prev, node);
         prev = node;
     }
-    Some(cost)
+    Some((cost, soft))
+}
+
+/// Forward pass of `route` on `d`, `false` once a hard bound breaks. Soft
+/// excess goes to `excess` as `(node, units, cost)`, `None` for the
+/// vehicle's peak. Shared by the hot loop and the violation report.
+fn walk(
+    m: &Model,
+    d: &Dimension,
+    route: &[NodeId],
+    veh: &Vehicle,
+    v: VehicleId,
+    mut excess: impl FnMut(Option<NodeId>, i64, Cost),
+) -> bool {
+    let cap = d.max_cumul[v.index()];
+    let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
+    if cumul > cap {
+        return false;
+    }
+    let mut peak = cumul;
+    let mut prev = veh.start;
+    for &node in route.iter().chain(std::iter::once(&veh.end)) {
+        // Late is infeasible before the clamp; early waits via the clamp.
+        let arrive = cumul + m.eval(d.transit, prev, node);
+        if arrive > d.upper_bound[node.index()] {
+            return false;
+        }
+        if arrive > d.soft_upper_bound[node.index()] {
+            let units = arrive - d.soft_upper_bound[node.index()];
+            excess(
+                Some(node),
+                units,
+                units * d.soft_upper_bound_cost[node.index()],
+            );
+        }
+        cumul = arrive.max(d.lower_bound[node.index()]);
+        if cumul > cap {
+            return false;
+        }
+        peak = peak.max(cumul);
+        prev = node;
+    }
+    if peak > d.soft_max_cumul[v.index()] {
+        let units = peak - d.soft_max_cumul[v.index()];
+        excess(None, units, units * d.soft_max_cumul_cost[v.index()]);
+    }
+    true
+}
+
+/// One soft bound exceeded: at `node`, or `None` for the vehicle's peak.
+/// `penalty` is what it added to the cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Violation {
+    pub dimension: usize,
+    pub vehicle: VehicleId,
+    pub node: Option<NodeId>,
+    pub excess: i64,
+    pub penalty: Cost,
+}
+
+/// Every soft bound `sol` exceeds, and what each one cost.
+pub fn violations(m: &Model, sol: &Routes) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (v, route) in sol.iter().enumerate() {
+        let vehicle = VehicleId(v as u32);
+        if m.unserved_vehicle() == Some(vehicle) {
+            continue;
+        }
+        for (dimension, d) in m.dimensions().iter().enumerate() {
+            walk(
+                m,
+                d,
+                route,
+                m.vehicle(vehicle),
+                vehicle,
+                |node, excess, penalty| {
+                    out.push(Violation {
+                        dimension,
+                        vehicle,
+                        node,
+                        excess,
+                        penalty,
+                    })
+                },
+            );
+        }
+    }
+    out
 }
 
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array
