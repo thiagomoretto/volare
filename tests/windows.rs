@@ -109,3 +109,28 @@ fn soft_close_never_charges_a_drop() {
     assert_eq!(eval_route(&m, &[NodeId(1)], sink), Some(999));
     assert!(violations(&m, &vec![vec![], vec![NodeId(1)]]).is_empty());
 }
+
+#[test]
+fn wait_is_priced_per_unit() {
+    let mut b = builder();
+    // Arrive at 1 at t=10, wait until 15: five units at 3 each.
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.wait_cost("time", VehicleId(0), 3);
+    let m = b.build();
+    assert_eq!(
+        eval_route_split(&m, &[NodeId(1)], VehicleId(0)),
+        Some((20, 15))
+    );
+    assert!(
+        violations(&m, &vec![vec![NodeId(1)]]).is_empty(),
+        "a wait is not a violation"
+    );
+}
+
+#[test]
+fn no_wait_no_charge() {
+    let mut b = builder();
+    b.wait_cost("time", VehicleId(0), 3);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), Some(20));
+}

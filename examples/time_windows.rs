@@ -1,0 +1,106 @@
+//! Time windows with priced idle time, and reading the timetable back.
+//!
+//! `cumul_bounds` on a `time` dimension is the window: arriving after the
+//! close is infeasible, arriving before the open waits. `wait_cost` prices
+//! every unit a vehicle stands idle. `Schedule` reads arrival, wait and
+//! service start off the finished routes.
+//!
+//! ```sh
+//! cargo run --example time_windows
+//! ```
+
+use volare::{Construct, Improve, ModelBuilder, NodeId, Schedule, solve};
+
+fn main() {
+    // Minutes from midnight. One unit of distance is one minute of driving.
+    let coords: [(f64, f64); 7] = [
+        (0.0, 0.0),    // 0 depot
+        (30.0, 10.0),  // 1
+        (35.0, -20.0), // 2
+        (-15.0, 25.0), // 3
+        (-40.0, 5.0),  // 4
+        (10.0, 45.0),  // 5
+        (20.0, -40.0), // 6
+    ];
+    // Service window per stop, `(open, close)`. The depot's open is when
+    // the vans leave.
+    let windows = [
+        (8 * 60, 24 * 60),
+        (10 * 60, 12 * 60), // 1: 10:00 to 12:00
+        (8 * 60, 9 * 60),   // 2: 08:00 to 09:00
+        (9 * 60, 11 * 60),  // 3
+        (14 * 60, 15 * 60), // 4: opens after the morning round
+        (8 * 60, 10 * 60),  // 5
+        (11 * 60, 13 * 60), // 6
+    ];
+    let service = 15;
+
+    let mut b = ModelBuilder::new(coords.len());
+
+    let cost = b.cost_class(move |from, to| {
+        let (p, q) = (coords[from.index()], coords[to.index()]);
+        (p.0 - q.0).hypot(p.1 - q.1).round() as i64
+    });
+
+    let vans = [
+        b.vehicle(NodeId(0), NodeId(0), cost),
+        b.vehicle(NodeId(0), NodeId(0), cost),
+    ];
+
+    // Transit is the drive plus the service at the stop just left.
+    b.dimension(
+        "time",
+        move |from, to| {
+            let (p, q) = (coords[from.index()], coords[to.index()]);
+            let drive = (p.0 - q.0).hypot(p.1 - q.1).round() as i64;
+            let served = if from == NodeId(0) { 0 } else { service };
+            drive + served
+        },
+        vec![i64::MAX; vans.len()],
+    );
+    for (n, &(open, close)) in windows.iter().enumerate() {
+        b.cumul_bounds("time", NodeId(n as u32), open, close);
+    }
+    // An idle van costs as much per minute as a driving one.
+    for &v in &vans {
+        b.wait_cost("time", v, 1);
+    }
+
+    let model = b.build();
+    let sol = solve(
+        &model,
+        Construct::CheapestInsertion,
+        Improve::Gls { iters: 200 },
+    );
+
+    let s = Schedule::of(&model, &sol.routes);
+    let t = Schedule::dimension(&model, "time");
+    for &v in &vans {
+        println!("van {}", v.index());
+        for stop in s.route(v) {
+            println!(
+                "  stop {:<2} arrive {}  wait {:>3}  serve {}",
+                stop.node.index(),
+                clock(stop.arrive[t]),
+                stop.wait(t),
+                clock(stop.cumul[t]),
+            );
+        }
+    }
+    let idle: i64 = vans
+        .iter()
+        .flat_map(|&v| s.route(v))
+        .map(|stop| stop.wait(t))
+        .sum();
+    println!("total cost: {} (of which {idle} idle minutes)", sol.cost);
+
+    // Every stop is served inside its window, never before the open.
+    for (n, &(open, close)) in windows.iter().enumerate().skip(1) {
+        let stop = s.stop(NodeId(n as u32)).expect("every stop is served");
+        assert!(open <= stop.cumul[t] && stop.arrive[t] <= close);
+    }
+}
+
+fn clock(minutes: i64) -> String {
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}

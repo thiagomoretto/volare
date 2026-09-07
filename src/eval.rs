@@ -41,10 +41,21 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
             return None;
         }
         for d in m.dimensions() {
+            let mut wait = 0;
             // Per-dimension weighting of the prices belongs here.
-            if !walk(m, d, route, veh, v, |_, _, cost| soft += cost) {
+            let ok = walk(
+                m,
+                d,
+                route,
+                veh,
+                v,
+                |_, _, cost| soft += cost,
+                |_, arrive, cumul| wait += cumul - arrive,
+            );
+            if !ok {
                 return None;
             }
+            soft += wait * d.wait_cost[v.index()];
         }
     }
 
@@ -59,7 +70,10 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
 
 /// Forward pass of `route` on `d`, `false` once a hard bound breaks. Soft
 /// excess goes to `excess` as `(node, units, cost)`, `None` for the
-/// vehicle's peak. Shared by the hot loop and the violation report.
+/// vehicle's peak. Every stop, start and end included, goes to `visit` as
+/// `(node, arrive, cumul)`; the gap between the two is the wait. The start
+/// has no arrival, so both are its departure. Shared by the hot loop, the
+/// violation report and the schedule.
 fn walk(
     m: &Model,
     d: &Dimension,
@@ -67,12 +81,14 @@ fn walk(
     veh: &Vehicle,
     v: VehicleId,
     mut excess: impl FnMut(Option<NodeId>, i64, Cost),
+    mut visit: impl FnMut(NodeId, i64, i64),
 ) -> bool {
     let cap = d.max_cumul[v.index()];
     let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
     if cumul > cap {
         return false;
     }
+    visit(veh.start, cumul, cumul);
     let mut peak = cumul;
     let mut prev = veh.start;
     for &node in route.iter().chain(std::iter::once(&veh.end)) {
@@ -93,6 +109,7 @@ fn walk(
         if cumul > cap {
             return false;
         }
+        visit(node, arrive, cumul);
         peak = peak.max(cumul);
         prev = node;
     }
@@ -138,10 +155,104 @@ pub fn violations(m: &Model, sol: &Routes) -> Vec<Violation> {
                         penalty,
                     })
                 },
+                |_, _, _| {},
             );
         }
     }
     out
+}
+
+/// One visit on a finished route, with every dimension's value at it.
+/// Both vectors are indexed by dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stop {
+    pub node: NodeId,
+    /// Before any wait. At a start node, the departure.
+    pub arrive: Vec<i64>,
+    /// After the wait for the node's lower bound: when service starts.
+    pub cumul: Vec<i64>,
+}
+
+impl Stop {
+    pub fn wait(&self, dimension: usize) -> i64 {
+        self.cumul[dimension] - self.arrive[dimension]
+    }
+}
+
+/// Every dimension at every stop of a solution, for reading finished routes:
+/// arrival, service start, wait, load. Built once, then looked up by vehicle
+/// or by node. Nodes on the drop sink have no stop.
+pub struct Schedule {
+    routes: Vec<Vec<Stop>>,
+}
+
+impl Schedule {
+    /// Panics on an infeasible route; a solver result never is.
+    pub fn of(m: &Model, sol: &Routes) -> Schedule {
+        let dims = m.dimensions().len();
+        let mut routes = Vec::with_capacity(sol.len());
+        for (v, route) in sol.iter().enumerate() {
+            let vehicle = VehicleId(v as u32);
+            if m.unserved_vehicle() == Some(vehicle) {
+                routes.push(Vec::new());
+                continue;
+            }
+            let veh = m.vehicle(vehicle);
+            let mut stops: Vec<Stop> = std::iter::once(&veh.start)
+                .chain(route)
+                .chain(std::iter::once(&veh.end))
+                .map(|&node| Stop {
+                    node,
+                    arrive: vec![0; dims],
+                    cumul: vec![0; dims],
+                })
+                .collect();
+            for (k, d) in m.dimensions().iter().enumerate() {
+                let mut i = 0;
+                let ok = walk(
+                    m,
+                    d,
+                    route,
+                    veh,
+                    vehicle,
+                    |_, _, _| {},
+                    |_, arrive, cumul| {
+                        stops[i].arrive[k] = arrive;
+                        stops[i].cumul[k] = cumul;
+                        i += 1;
+                    },
+                );
+                assert!(ok, "vehicle {v} runs an infeasible route");
+            }
+            routes.push(stops);
+        }
+        Schedule { routes }
+    }
+
+    /// Start through end, in visiting order. Empty for the drop sink.
+    pub fn route(&self, v: VehicleId) -> &[Stop] {
+        &self.routes[v.index()]
+    }
+
+    /// The stop serving `n`, `None` if `n` is unserved or a terminal.
+    /// Terminals are shared between vehicles, so they are reachable through
+    /// `route` only.
+    // ponytail: linear scan per lookup. Index node -> (vehicle, position) if
+    // a caller ever asks for every node of a big solution.
+    pub fn stop(&self, n: NodeId) -> Option<&Stop> {
+        self.routes
+            .iter()
+            .flat_map(|r| r.get(1..r.len().saturating_sub(1)).unwrap_or(&[]))
+            .find(|s| s.node == n)
+    }
+
+    /// Index of dimension `name` into a stop's vectors.
+    pub fn dimension(m: &Model, name: &str) -> usize {
+        m.dimensions()
+            .iter()
+            .position(|d| d.name == name)
+            .expect("unknown dimension")
+    }
 }
 
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array

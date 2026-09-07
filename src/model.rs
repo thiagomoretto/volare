@@ -62,6 +62,9 @@ pub struct Dimension {
     /// delivery would pay one overload at every later stop.
     pub soft_max_cumul: Vec<i64>,
     pub soft_max_cumul_cost: Vec<Cost>,
+    /// Per vehicle, per unit the vehicle waits for a node's lower bound.
+    /// Arriving early is free; standing still is not.
+    pub wait_cost: Vec<Cost>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -185,6 +188,7 @@ impl ModelBuilder {
             soft_upper_bound_cost: vec![0; self.node_count],
             soft_max_cumul: vec![i64::MAX; vehicles],
             soft_max_cumul_cost: vec![0; vehicles],
+            wait_cost: vec![0; vehicles],
         });
         self
     }
@@ -233,6 +237,14 @@ impl ModelBuilder {
         let d = self.dimension_mut(name);
         d.soft_max_cumul[v.index()] = cap;
         d.soft_max_cumul_cost[v.index()] = cost_per_unit;
+    }
+
+    /// Every unit vehicle `v` waits for a lower bound on `name` costs
+    /// `cost_per_unit`, in arc-cost units.
+    pub fn wait_cost(&mut self, name: &str, v: VehicleId, cost_per_unit: Cost) {
+        assert!(v.index() < self.vehicles.len(), "vehicle out of range");
+        assert!(cost_per_unit >= 0, "a negative wait cost rewards waiting");
+        self.dimension_mut(name).wait_cost[v.index()] = cost_per_unit;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
@@ -305,6 +317,7 @@ impl ModelBuilder {
                 d.max_cumul.push(i64::MAX);
                 d.soft_max_cumul.push(i64::MAX);
                 d.soft_max_cumul_cost.push(0);
+                d.wait_cost.push(0);
             }
             Some(id)
         };
