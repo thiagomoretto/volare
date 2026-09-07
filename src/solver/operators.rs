@@ -210,9 +210,9 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 /// The delta ranks candidates by true arc cost even under guided local
 /// search; penalties only steer which candidates `eval` accepts.
 ///
-/// ponytail: soft-bound penalties are invisible to that filter too; a swap
-/// that only cuts lateness is left to relocate. Rank by `eval` delta if the
-/// softcap bench keeps landing above the open solve.
+/// ponytail: the filter sees arc cost only, so a soft-bound penalty change
+/// never ranks here; penalty-only gains are left to relocate. Rank by
+/// `eval` delta to include them.
 pub(super) fn try_two_opt_star(
     m: &Model,
     sol: &mut Routes,

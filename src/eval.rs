@@ -41,7 +41,7 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
             return None;
         }
         for d in m.dimensions() {
-            // Search-side weights on the model's prices, if ever, go here.
+            // Per-dimension weighting of the prices belongs here.
             if !walk(m, d, route, veh, v, |_, _, cost| soft += cost) {
                 return None;
             }
