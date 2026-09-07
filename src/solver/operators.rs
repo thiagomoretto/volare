@@ -56,15 +56,13 @@ pub(super) fn try_relocate(
 /// anywhere, including back into `r`. Returns the receiving vehicle.
 ///
 /// This is relocate generalized to two nodes (or-opt with chain length 2;
-/// length 1 is relocate, and chains of 3 measured worse than they helped).
-/// Intra-route it reaches orderings 2-opt cannot: a chain moves without
-/// reversal, while 2-opt only reverses. Inter-route it moves a pair whose
-/// single nodes fit nowhere — a tight time-window chain, or two units of
-/// demand where one does not fit.
+/// length 1 is relocate). Intra-route it reaches orderings 2-opt cannot: a
+/// chain moves without reversal, while 2-opt only reverses. Inter-route it
+/// moves a pair whose single nodes fit nowhere — a tight time-window
+/// chain, or two units of demand where one does not fit.
 ///
 /// Best-improvement, unlike relocate: a chain commits two customers at
-/// once, and first-improvement drags the descent into worse local optima
-/// (same lesson as 2-opt*, measured on X-n101-k25).
+/// once, so the cheapest move is worth the full scan.
 pub(super) fn try_or_opt(
     m: &Model,
     sol: &mut Routes,
@@ -206,9 +204,8 @@ type TwoOptStarMove = (Cost, usize, Vec<NodeId>, Vec<NodeId>, Cost, Cost);
 /// the two cut arcs and the two reconnecting arcs change — and `eval`
 /// runs only on improving candidates, to confirm capacity.
 ///
-/// Best-improvement, unlike the cheaper operators: a tail swap commits many
-/// customers at once, so taking the first improving cut drags the descent
-/// into noticeably worse local optima (measured on X-n143-k7).
+/// Best-improvement, unlike the cheaper operators: a tail swap commits
+/// many customers at once, so the cheapest cut is worth the full scan.
 ///
 /// The delta ranks candidates by true arc cost even under guided local
 /// search; penalties only steer which candidates `eval` accepts.

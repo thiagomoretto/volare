@@ -98,9 +98,9 @@ pub(super) fn descend(
 
         if !improved {
             // The fine operators are at a fixpoint: one 2-opt* pass over all
-            // routes. Firing it here instead of per node keeps the big tail
-            // swaps from disrupting routes that relocate would have fixed for
-            // less (X-n143-k7 regressed sharply the other way).
+            // routes. It fires here instead of per node because a tail swap
+            // is partition-level: run mid-cascade it disrupts routes the
+            // fine operators would have fixed for less.
             for r in 0..sol.len() {
                 if sol[r].is_empty() {
                     continue;
