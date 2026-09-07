@@ -96,31 +96,6 @@ The two upper bounds are not the same test. `cumul_bounds` checks the arrival
 the vehicle's endurance but never against the node's window, and neither
 bound expresses the other.
 
-### Soft bounds
-
-Each upper bound has a soft twin. Past the soft bound the route stays
-feasible and pays a price per unit of excess, in the same scale as the arc
-costs; past the hard bound it is infeasible as before. Set the hard bound to
-`i64::MAX` for a limit that is only ever priced.
-
-```rust
-// Node 3 would like service by 60. Every unit later costs 5, until the hard
-// close at 90 from cumul_bounds above.
-b.soft_upper_bound("time", NodeId(3), 60, 5);
-
-// Vehicle 0 is built for 100 but may take 110; each unit over 100 costs 40.
-b.dimension("load", move |_from, to| demand[to.index()], vec![100, 100]);
-b.max_cumul("load", VehicleId(0), 110);
-b.soft_max_cumul("load", VehicleId(0), 100, 40);
-```
-
-Lateness propagates: a vehicle that leaves node 3 late arrives late at the
-next stop too, and each late stop pays its own price. An overload is priced
-once, on the route's peak. After the solve, `violations(&model, &sol.routes)`
-lists every soft bound the solution exceeded, by how much and at what price;
-the prices are already inside `sol.cost`, and `eval_route_split` gives the
-arc cost and the penalty apart.
-
 ## What is in the box
 
 | | |
@@ -128,7 +103,7 @@ arc cost and the penalty apart.
 | Construction | cheapest insertion |
 | Improvement | hill climb, or guided local search on top of it |
 | Operators | relocate, swap, 2-opt, 2-opt* |
-| Constraints | per-vehicle cumul limits, windows per node, both hard or priced past a soft bound, per-vehicle node exclusion, optional nodes with a drop penalty |
+| Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
 | Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
 
 ## Benchmarks
