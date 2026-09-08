@@ -11,3 +11,4 @@ cargo run --release --example <name>
 | [`simple_cvrp`](simple_cvrp.rs) | Model a small CVRP from coordinates, solve it, print the routes and total cost |
 | [`forbidden_nodes`](forbidden_nodes.rs) | Block a vehicle from serving a customer with `forbid`, and see the solver route around it |
 | [`precedence`](precedence.rs) | Order two stops within a route with `precede`, and see a pair split across vehicles go unordered |
+| [`time_windows`](time_windows.rs) | Serve each stop inside its window with `cumul_bounds`, price idle time with `wait_cost`, and read the timetable back with `walk_route` |

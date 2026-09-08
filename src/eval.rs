@@ -42,7 +42,7 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
         }
         for d in m.dimensions() {
             // Per-dimension weighting of the prices belongs here.
-            if !walk(m, d, route, veh, v, |_, _, cost| soft += cost) {
+            if !walk(m, d, route, veh, v, |_, _, cost| soft += cost, |_, _, _| {}) {
                 return None;
             }
         }
@@ -57,9 +57,12 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
     Some((cost, soft))
 }
 
-/// Forward pass of `route` on `d`, `false` once a hard bound breaks. Soft
-/// excess goes to `excess` as `(node, units, cost)`, `None` for the
-/// vehicle's peak. Shared by the hot loop and the violation report.
+/// Forward pass of `route` on `d`, `false` once a hard bound breaks. Every
+/// priced unit goes to `excess` as `(node, units, cost)`: soft excess at a
+/// node, a priced wait at a node, `None` for the vehicle's peak. Every stop,
+/// start and end included, goes to `visit` as `(node, arrive, cumul)`; the
+/// gap between the two is the wait. The start has no arrival, so both are
+/// its departure.
 fn walk(
     m: &Model,
     d: &Dimension,
@@ -67,12 +70,15 @@ fn walk(
     veh: &Vehicle,
     v: VehicleId,
     mut excess: impl FnMut(Option<NodeId>, i64, Cost),
+    mut visit: impl FnMut(NodeId, i64, i64),
 ) -> bool {
     let cap = d.max_cumul[v.index()];
-    let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
+    let wait_cost = d.wait_cost[v.index()];
+    let mut cumul = d.lower_bound[veh.start.index()];
     if cumul > cap {
         return false;
     }
+    visit(veh.start, cumul, cumul);
     let mut peak = cumul;
     let mut prev = veh.start;
     for &node in route.iter().chain(std::iter::once(&veh.end)) {
@@ -93,6 +99,10 @@ fn walk(
         if cumul > cap {
             return false;
         }
+        if wait_cost > 0 && cumul > arrive {
+            excess(Some(node), cumul - arrive, (cumul - arrive) * wait_cost);
+        }
+        visit(node, arrive, cumul);
         peak = peak.max(cumul);
         prev = node;
     }
@@ -103,8 +113,9 @@ fn walk(
     true
 }
 
-/// One soft bound exceeded: at `node`, or `None` for the vehicle's peak.
-/// `penalty` is what it added to the cost.
+/// One priced thing: a soft bound exceeded at `node`, a priced wait at
+/// `node`, or `None` for the vehicle's peak. `penalty` is what it added to
+/// the cost. `walk_route` tells a wait from a late arrival.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Violation {
     pub dimension: usize,
@@ -138,10 +149,27 @@ pub fn violations(m: &Model, sol: &Routes) -> Vec<Violation> {
                         penalty,
                     })
                 },
+                |_, _, _| {},
             );
         }
     }
     out
+}
+
+/// Forward pass of `route` on vehicle `v` over dimension `dim`, one call per
+/// stop as `(node, arrive, cumul)`, start and end included. `cumul - arrive`
+/// is the wait; at the start both are the departure. `false` once a hard
+/// bound breaks, the stops before it already visited. The drop sink has no
+/// timetable.
+pub fn walk_route(
+    m: &Model,
+    route: &[NodeId],
+    v: VehicleId,
+    dim: usize,
+    visit: impl FnMut(NodeId, i64, i64),
+) -> bool {
+    let d = &m.dimensions()[dim];
+    walk(m, d, route, m.vehicle(v), v, |_, _, _| {}, visit)
 }
 
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array

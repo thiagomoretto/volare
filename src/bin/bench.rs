@@ -405,15 +405,11 @@ fn check_precede(model: &Model, sol: &Solution, name: &str) -> usize {
 /// Re-walk every route on the time dimension and assert no late arrival.
 /// Returns the number of waits, proof that the clamp fires.
 fn check_tw(model: &Model, sol: &Solution, name: &str) -> usize {
-    let d = model
-        .dimensions()
-        .iter()
-        .find(|d| d.name == "time")
-        .expect("tw scenario has a time dimension");
+    let d = &model.dimensions()[model.dimension_index("time")];
     let mut waits = 0;
     for (v, route) in sol.routes.iter().enumerate() {
         let veh = model.vehicle(VehicleId(v as u32));
-        let mut cumul = d.start_cumul.max(d.lower_bound[veh.start.index()]);
+        let mut cumul = d.lower_bound[veh.start.index()];
         let mut prev = veh.start;
         for &node in route.iter().chain(std::iter::once(&veh.end)) {
             let arrive = cumul + model.eval(d.transit, prev, node);

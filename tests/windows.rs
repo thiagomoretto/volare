@@ -4,7 +4,7 @@
 
 use volare::{
     ModelBuilder, NodeId, VehicleId, Violation, eval_route, eval_route_split, eval_routes,
-    violations,
+    violations, walk_route,
 };
 
 /// Depot 0, customers 1 and 2, every arc 10 time units.
@@ -108,4 +108,70 @@ fn soft_close_never_charges_a_drop() {
     let sink = m.unserved_vehicle().unwrap();
     assert_eq!(eval_route(&m, &[NodeId(1)], sink), Some(999));
     assert!(violations(&m, &vec![vec![], vec![NodeId(1)]]).is_empty());
+}
+
+#[test]
+fn wait_is_priced_per_unit() {
+    let mut b = builder();
+    // Arrive at 1 at t=10, wait until 15: five units at 3 each.
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.wait_cost("time", VehicleId(0), 3);
+    let m = b.build();
+    assert_eq!(
+        eval_route_split(&m, &[NodeId(1)], VehicleId(0)),
+        Some((20, 15))
+    );
+    let v = violations(&m, &vec![vec![NodeId(1)]]);
+    assert_eq!(
+        (v.len(), v[0].node, v[0].excess, v[0].penalty),
+        (1, Some(NodeId(1)), 5, 15)
+    );
+}
+
+#[test]
+fn walk_route_reads_arrival_wait_and_load_back() {
+    let mut b = builder();
+    b.dimension(
+        "load",
+        |_, to| if to.index() == 0 { 0 } else { 4 },
+        vec![10],
+    );
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    let m = b.build();
+    let route = [NodeId(1)];
+
+    let mut time = Vec::new();
+    let ok = walk_route(
+        &m,
+        &route,
+        VehicleId(0),
+        m.dimension_index("time"),
+        |n, a, c| time.push((n, a, c)),
+    );
+    assert!(ok);
+    // Arrive at 1 at 10, wait until 15; the wait pushes the return to 25.
+    assert_eq!(
+        time,
+        [(NodeId(0), 0, 0), (NodeId(1), 10, 15), (NodeId(0), 25, 25)]
+    );
+
+    let mut load = Vec::new();
+    walk_route(
+        &m,
+        &route,
+        VehicleId(0),
+        m.dimension_index("load"),
+        |_, _, c| load.push(c),
+    );
+    assert_eq!(load, [0, 4, 4]);
+
+    b = builder();
+    b.cumul_bounds("time", NodeId(1), 0, 5);
+    let m = b.build();
+    let mut seen = 0;
+    let ok = walk_route(&m, &route, VehicleId(0), 0, |_, _, _| seen += 1);
+    assert!(
+        !ok && seen == 1,
+        "stops before the broken bound are visited"
+    );
 }

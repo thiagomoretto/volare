@@ -52,7 +52,7 @@ pub struct Dimension {
     /// Index into the evaluator table.
     pub transit: usize,
     pub max_cumul: Vec<i64>,
-    pub start_cumul: i64,
+    /// A vehicle leaves its start node at the node's lower bound.
     pub lower_bound: Vec<i64>,
     pub upper_bound: Vec<i64>,
     /// Per node. Lateness propagates to the next arrival.
@@ -62,6 +62,9 @@ pub struct Dimension {
     /// delivery would pay one overload at every later stop.
     pub soft_max_cumul: Vec<i64>,
     pub soft_max_cumul_cost: Vec<Cost>,
+    /// Per vehicle, per unit the vehicle waits for a node's lower bound.
+    /// Arriving early is free; standing still is not.
+    pub wait_cost: Vec<Cost>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -91,6 +94,14 @@ impl Model {
     #[inline]
     pub fn vehicle(&self, v: VehicleId) -> &Vehicle {
         &self.vehicles[v.index()]
+    }
+
+    /// Index of dimension `name`, as `Stop` and `Violation` use it.
+    pub fn dimension_index(&self, name: &str) -> usize {
+        self.dimensions
+            .iter()
+            .position(|d| d.name == name)
+            .expect("unknown dimension")
     }
 
     #[inline]
@@ -178,13 +189,13 @@ impl ModelBuilder {
             name: name.to_string(),
             transit: self.evaluators.len() - 1,
             max_cumul,
-            start_cumul: 0,
             lower_bound: vec![0; self.node_count],
             upper_bound: vec![i64::MAX; self.node_count],
             soft_upper_bound: vec![i64::MAX; self.node_count],
             soft_upper_bound_cost: vec![0; self.node_count],
             soft_max_cumul: vec![i64::MAX; vehicles],
             soft_max_cumul_cost: vec![0; vehicles],
+            wait_cost: vec![0; vehicles],
         });
         self
     }
@@ -233,6 +244,14 @@ impl ModelBuilder {
         let d = self.dimension_mut(name);
         d.soft_max_cumul[v.index()] = cap;
         d.soft_max_cumul_cost[v.index()] = cost_per_unit;
+    }
+
+    /// Every unit vehicle `v` waits for a lower bound on `name` costs
+    /// `cost_per_unit`, in arc-cost units.
+    pub fn wait_cost(&mut self, name: &str, v: VehicleId, cost_per_unit: Cost) {
+        assert!(v.index() < self.vehicles.len(), "vehicle out of range");
+        assert!(cost_per_unit >= 0, "a negative wait cost rewards waiting");
+        self.dimension_mut(name).wait_cost[v.index()] = cost_per_unit;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
@@ -305,6 +324,7 @@ impl ModelBuilder {
                 d.max_cumul.push(i64::MAX);
                 d.soft_max_cumul.push(i64::MAX);
                 d.soft_max_cumul_cost.push(0);
+                d.wait_cost.push(0);
             }
             Some(id)
         };
