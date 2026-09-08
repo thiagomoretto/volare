@@ -17,7 +17,7 @@ runner are included.
 
 ```toml
 [dependencies]
-volare = "0.2"
+volare = "0.2.2"
 ```
 
 Requires Rust 1.85 or later. To build from source:
