@@ -231,8 +231,9 @@ impl Schedule {
     /// The stop serving `n`, `None` if `n` is unserved or a terminal.
     /// Terminals are shared between vehicles, so they are reachable through
     /// `route` only.
-    // ponytail: linear scan per lookup. Index node -> (vehicle, position) if
-    // a caller ever asks for every node of a big solution.
+    // ponytail: linear scan per lookup, so reading every node of a solution
+    // is quadratic. An index from node to (vehicle, position) makes it
+    // constant.
     pub fn stop(&self, n: NodeId) -> Option<&Stop> {
         self.routes
             .iter()
