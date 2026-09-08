@@ -3,8 +3,8 @@
 //! the hard one.
 
 use volare::{
-    ModelBuilder, NodeId, VehicleId, Violation, eval_route, eval_route_split, eval_routes,
-    violations,
+    ModelBuilder, NodeId, Schedule, VehicleId, Violation, eval_route, eval_route_split,
+    eval_routes, violations,
 };
 
 /// Depot 0, customers 1 and 2, every arc 10 time units.
@@ -121,16 +121,39 @@ fn wait_is_priced_per_unit() {
         eval_route_split(&m, &[NodeId(1)], VehicleId(0)),
         Some((20, 15))
     );
-    assert!(
-        violations(&m, &vec![vec![NodeId(1)]]).is_empty(),
-        "a wait is not a violation"
+    let v = violations(&m, &vec![vec![NodeId(1)]]);
+    assert_eq!(
+        (v.len(), v[0].node, v[0].excess, v[0].penalty),
+        (1, Some(NodeId(1)), 5, 15)
     );
 }
 
 #[test]
-fn no_wait_no_charge() {
+fn schedule_reads_arrival_wait_and_load_back() {
     let mut b = builder();
-    b.wait_cost("time", VehicleId(0), 3);
+    b.dimension(
+        "load",
+        |_, to| if to.index() == 0 { 0 } else { 4 },
+        vec![10],
+    );
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.allow_drop(NodeId(2), 999);
     let m = b.build();
-    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), Some(20));
+    let routes = vec![vec![NodeId(1)], vec![NodeId(2)]];
+
+    let s = Schedule::of(&m, &routes);
+    let t = m.dimension_index("time");
+    let load = m.dimension_index("load");
+
+    let r = s.route(VehicleId(0));
+    let nodes: Vec<_> = r.iter().map(|s| s.node).collect();
+    assert_eq!(nodes, [NodeId(0), NodeId(1), NodeId(0)]);
+    assert_eq!((r[1].arrive[t], r[1].cumul[t], r[1].wait(t)), (10, 15, 5));
+    assert_eq!(r[2].arrive[t], 25, "the wait pushes the return");
+    assert_eq!(r[1].cumul[load], 4);
+
+    assert_eq!(s.stop(NodeId(1)).map(|s| s.cumul[t]), Some(15));
+    assert_eq!(s.stop(NodeId(2)), None, "dropped nodes have no stop");
+    assert_eq!(s.stop(NodeId(0)), None, "terminals are per vehicle");
+    assert!(s.route(VehicleId(1)).is_empty(), "the sink has no schedule");
 }

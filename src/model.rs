@@ -52,7 +52,7 @@ pub struct Dimension {
     /// Index into the evaluator table.
     pub transit: usize,
     pub max_cumul: Vec<i64>,
-    pub start_cumul: i64,
+    /// A vehicle leaves its start node at the node's lower bound.
     pub lower_bound: Vec<i64>,
     pub upper_bound: Vec<i64>,
     /// Per node. Lateness propagates to the next arrival.
@@ -94,6 +94,14 @@ impl Model {
     #[inline]
     pub fn vehicle(&self, v: VehicleId) -> &Vehicle {
         &self.vehicles[v.index()]
+    }
+
+    /// Index of dimension `name`, as `Stop` and `Violation` use it.
+    pub fn dimension_index(&self, name: &str) -> usize {
+        self.dimensions
+            .iter()
+            .position(|d| d.name == name)
+            .expect("unknown dimension")
     }
 
     #[inline]
@@ -181,7 +189,6 @@ impl ModelBuilder {
             name: name.to_string(),
             transit: self.evaluators.len() - 1,
             max_cumul,
-            start_cumul: 0,
             lower_bound: vec![0; self.node_count],
             upper_bound: vec![i64::MAX; self.node_count],
             soft_upper_bound: vec![i64::MAX; self.node_count],

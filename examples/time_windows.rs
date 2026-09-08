@@ -37,10 +37,11 @@ fn main() {
 
     let mut b = ModelBuilder::new(coords.len());
 
-    let cost = b.cost_class(move |from, to| {
+    let drive = move |from: NodeId, to: NodeId| {
         let (p, q) = (coords[from.index()], coords[to.index()]);
         (p.0 - q.0).hypot(p.1 - q.1).round() as i64
-    });
+    };
+    let cost = b.cost_class(drive);
 
     let vans = [
         b.vehicle(NodeId(0), NodeId(0), cost),
@@ -51,10 +52,8 @@ fn main() {
     b.dimension(
         "time",
         move |from, to| {
-            let (p, q) = (coords[from.index()], coords[to.index()]);
-            let drive = (p.0 - q.0).hypot(p.1 - q.1).round() as i64;
             let served = if from == NodeId(0) { 0 } else { service };
-            drive + served
+            drive(from, to) + served
         },
         vec![i64::MAX; vans.len()],
     );
@@ -74,7 +73,7 @@ fn main() {
     );
 
     let s = Schedule::of(&model, &sol.routes);
-    let t = Schedule::dimension(&model, "time");
+    let t = model.dimension_index("time");
     for &v in &vans {
         println!("van {}", v.index());
         for stop in s.route(v) {
