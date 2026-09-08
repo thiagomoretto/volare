@@ -2,14 +2,14 @@
 //!
 //! `cumul_bounds` on a `time` dimension is the window: arriving after the
 //! close is infeasible, arriving before the open waits. `wait_cost` prices
-//! every unit a vehicle stands idle. `Schedule` reads arrival, wait and
+//! every unit a vehicle stands idle. `walk_route` reads arrival, wait and
 //! service start off the finished routes.
 //!
 //! ```sh
 //! cargo run --example time_windows
 //! ```
 
-use volare::{Construct, Improve, ModelBuilder, NodeId, Schedule, solve};
+use volare::{Construct, Improve, ModelBuilder, NodeId, solve, walk_route};
 
 fn main() {
     // Minutes from midnight. One unit of distance is one minute of driving.
@@ -72,32 +72,32 @@ fn main() {
         Improve::Gls { iters: 200 },
     );
 
-    let s = Schedule::of(&model, &sol.routes);
+    // Read the timetable back. Every stop is served inside its window,
+    // never before the open.
     let t = model.dimension_index("time");
+    let mut idle = 0;
     for &v in &vans {
         println!("van {}", v.index());
-        for stop in s.route(v) {
-            println!(
-                "  stop {:<2} arrive {}  wait {:>3}  serve {}",
-                stop.node.index(),
-                clock(stop.arrive[t]),
-                stop.wait(t),
-                clock(stop.cumul[t]),
-            );
-        }
+        walk_route(
+            &model,
+            &sol.routes[v.index()],
+            v,
+            t,
+            |node, arrive, serve| {
+                println!(
+                    "  stop {:<2} arrive {}  wait {:>3}  serve {}",
+                    node.index(),
+                    clock(arrive),
+                    serve - arrive,
+                    clock(serve),
+                );
+                idle += serve - arrive;
+                let (open, close) = windows[node.index()];
+                assert!(open <= serve && arrive <= close);
+            },
+        );
     }
-    let idle: i64 = vans
-        .iter()
-        .flat_map(|&v| s.route(v))
-        .map(|stop| stop.wait(t))
-        .sum();
     println!("total cost: {} (of which {idle} idle minutes)", sol.cost);
-
-    // Every stop is served inside its window, never before the open.
-    for (n, &(open, close)) in windows.iter().enumerate().skip(1) {
-        let stop = s.stop(NodeId(n as u32)).expect("every stop is served");
-        assert!(open <= stop.cumul[t] && stop.arrive[t] <= close);
-    }
 }
 
 fn clock(minutes: i64) -> String {

@@ -6,7 +6,7 @@ pub mod solver;
 pub mod types;
 
 pub use eval::{
-    Routes, Schedule, Stop, Violation, eval_route, eval_route_split, eval_routes, violations,
+    Routes, Violation, eval_route, eval_route_split, eval_routes, violations, walk_route,
 };
 pub use model::{Model, ModelBuilder};
 pub use solver::{

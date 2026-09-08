@@ -115,7 +115,7 @@ fn walk(
 
 /// One priced thing: a soft bound exceeded at `node`, a priced wait at
 /// `node`, or `None` for the vehicle's peak. `penalty` is what it added to
-/// the cost. A `Schedule` tells a wait from a late arrival.
+/// the cost. `walk_route` tells a wait from a late arrival.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Violation {
     pub dimension: usize,
@@ -156,91 +156,20 @@ pub fn violations(m: &Model, sol: &Routes) -> Vec<Violation> {
     out
 }
 
-/// One visit on a finished route, with every dimension's value at it.
-/// Both vectors are indexed by dimension.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stop {
-    pub node: NodeId,
-    /// Before any wait. At a start node, the departure.
-    pub arrive: Vec<i64>,
-    /// After the wait for the node's lower bound: when service starts.
-    pub cumul: Vec<i64>,
-}
-
-impl Stop {
-    pub fn wait(&self, dimension: usize) -> i64 {
-        self.cumul[dimension] - self.arrive[dimension]
-    }
-}
-
-/// Every dimension at every stop of a solution, for reading finished routes:
-/// arrival, service start, wait, load. Built once, then looked up by vehicle
-/// or by node. Nodes on the drop sink have no stop.
-pub struct Schedule {
-    routes: Vec<Vec<Stop>>,
-}
-
-impl Schedule {
-    /// Panics on an infeasible route; a solver result never is.
-    pub fn of(m: &Model, sol: &Routes) -> Schedule {
-        let dims = m.dimensions().len();
-        let mut routes = Vec::with_capacity(sol.len());
-        for (v, route) in sol.iter().enumerate() {
-            let vehicle = VehicleId(v as u32);
-            if m.unserved_vehicle() == Some(vehicle) {
-                routes.push(Vec::new());
-                continue;
-            }
-            let veh = m.vehicle(vehicle);
-            let mut stops: Vec<Stop> = std::iter::once(&veh.start)
-                .chain(route)
-                .chain(std::iter::once(&veh.end))
-                .map(|&node| Stop {
-                    node,
-                    arrive: vec![0; dims],
-                    cumul: vec![0; dims],
-                })
-                .collect();
-            for (k, d) in m.dimensions().iter().enumerate() {
-                let mut i = 0;
-                let ok = walk(
-                    m,
-                    d,
-                    route,
-                    veh,
-                    vehicle,
-                    |_, _, _| {},
-                    |_, arrive, cumul| {
-                        stops[i].arrive[k] = arrive;
-                        stops[i].cumul[k] = cumul;
-                        i += 1;
-                    },
-                );
-                assert!(ok, "vehicle {v} runs an infeasible route");
-            }
-            routes.push(stops);
-        }
-        Schedule { routes }
-    }
-
-    /// Start through end, in visiting order. Empty for the drop sink.
-    pub fn route(&self, v: VehicleId) -> &[Stop] {
-        &self.routes[v.index()]
-    }
-
-    /// The stop serving `n`, `None` if `n` is unserved or a terminal.
-    /// Terminals are shared between vehicles, so they are reachable through
-    /// `route` only.
-    // ponytail: linear scan per lookup, so reading every node of a solution
-    // is quadratic. An index from node to (vehicle, position) makes it
-    // constant.
-    pub fn stop(&self, n: NodeId) -> Option<&Stop> {
-        self.routes
-            .iter()
-            .filter(|r| !r.is_empty())
-            .flat_map(|r| &r[1..r.len() - 1])
-            .find(|s| s.node == n)
-    }
+/// Forward pass of `route` on vehicle `v` over dimension `dim`, one call per
+/// stop as `(node, arrive, cumul)`, start and end included. `cumul - arrive`
+/// is the wait; at the start both are the departure. `false` once a hard
+/// bound breaks, the stops before it already visited. The drop sink has no
+/// timetable.
+pub fn walk_route(
+    m: &Model,
+    route: &[NodeId],
+    v: VehicleId,
+    dim: usize,
+    visit: impl FnMut(NodeId, i64, i64),
+) -> bool {
+    let d = &m.dimensions()[dim];
+    walk(m, d, route, m.vehicle(v), v, |_, _, _| {}, visit)
 }
 
 // ponytail: linear `route[..i]` scan. Swap for a timestamped position array

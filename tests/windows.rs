@@ -3,8 +3,8 @@
 //! the hard one.
 
 use volare::{
-    ModelBuilder, NodeId, Schedule, VehicleId, Violation, eval_route, eval_route_split,
-    eval_routes, violations,
+    ModelBuilder, NodeId, VehicleId, Violation, eval_route, eval_route_split, eval_routes,
+    violations, walk_route,
 };
 
 /// Depot 0, customers 1 and 2, every arc 10 time units.
@@ -129,7 +129,7 @@ fn wait_is_priced_per_unit() {
 }
 
 #[test]
-fn schedule_reads_arrival_wait_and_load_back() {
+fn walk_route_reads_arrival_wait_and_load_back() {
     let mut b = builder();
     b.dimension(
         "load",
@@ -137,23 +137,41 @@ fn schedule_reads_arrival_wait_and_load_back() {
         vec![10],
     );
     b.cumul_bounds("time", NodeId(1), 15, 100);
-    b.allow_drop(NodeId(2), 999);
     let m = b.build();
-    let routes = vec![vec![NodeId(1)], vec![NodeId(2)]];
+    let route = [NodeId(1)];
 
-    let s = Schedule::of(&m, &routes);
-    let t = m.dimension_index("time");
-    let load = m.dimension_index("load");
+    let mut time = Vec::new();
+    let ok = walk_route(
+        &m,
+        &route,
+        VehicleId(0),
+        m.dimension_index("time"),
+        |n, a, c| time.push((n, a, c)),
+    );
+    assert!(ok);
+    // Arrive at 1 at 10, wait until 15; the wait pushes the return to 25.
+    assert_eq!(
+        time,
+        [(NodeId(0), 0, 0), (NodeId(1), 10, 15), (NodeId(0), 25, 25)]
+    );
 
-    let r = s.route(VehicleId(0));
-    let nodes: Vec<_> = r.iter().map(|s| s.node).collect();
-    assert_eq!(nodes, [NodeId(0), NodeId(1), NodeId(0)]);
-    assert_eq!((r[1].arrive[t], r[1].cumul[t], r[1].wait(t)), (10, 15, 5));
-    assert_eq!(r[2].arrive[t], 25, "the wait pushes the return");
-    assert_eq!(r[1].cumul[load], 4);
+    let mut load = Vec::new();
+    walk_route(
+        &m,
+        &route,
+        VehicleId(0),
+        m.dimension_index("load"),
+        |_, _, c| load.push(c),
+    );
+    assert_eq!(load, [0, 4, 4]);
 
-    assert_eq!(s.stop(NodeId(1)).map(|s| s.cumul[t]), Some(15));
-    assert_eq!(s.stop(NodeId(2)), None, "dropped nodes have no stop");
-    assert_eq!(s.stop(NodeId(0)), None, "terminals are per vehicle");
-    assert!(s.route(VehicleId(1)).is_empty(), "the sink has no schedule");
+    b = builder();
+    b.cumul_bounds("time", NodeId(1), 0, 5);
+    let m = b.build();
+    let mut seen = 0;
+    let ok = walk_route(&m, &route, VehicleId(0), 0, |_, _, _| seen += 1);
+    assert!(
+        !ok && seen == 1,
+        "stops before the broken bound are visited"
+    );
 }
