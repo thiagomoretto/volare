@@ -74,6 +74,7 @@ fn walk(
 ) -> bool {
     let cap = d.max_cumul[v.index()];
     let wait_cost = d.wait_cost[v.index()];
+    let wait_cap = d.max_wait[v.index()];
     let mut cumul = d.lower_bound[veh.start.index()];
     if cumul > cap {
         return false;
@@ -99,8 +100,14 @@ fn walk(
         if cumul > cap {
             return false;
         }
-        if wait_cost > 0 && cumul > arrive {
-            excess(Some(node), cumul - arrive, (cumul - arrive) * wait_cost);
+        if cumul > arrive {
+            let wait = cumul - arrive;
+            if wait > wait_cap || wait > d.max_wait_at[node.index()] {
+                return false;
+            }
+            if wait_cost > 0 {
+                excess(Some(node), wait, wait * wait_cost);
+            }
         }
         visit(node, arrive, cumul);
         peak = peak.max(cumul);

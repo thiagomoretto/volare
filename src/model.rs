@@ -65,6 +65,12 @@ pub struct Dimension {
     /// Per vehicle, per unit the vehicle waits for a node's lower bound.
     /// Arriving early is free; standing still is not.
     pub wait_cost: Vec<Cost>,
+    /// Per vehicle. The longest one stop may hold a vehicle idle.
+    pub max_wait: Vec<i64>,
+    /// Per node. The longest that node may hold any vehicle idle. The
+    /// tighter of the two binds; a node the fleet may not idle at and a
+    /// vehicle that may not idle anywhere are different statements.
+    pub max_wait_at: Vec<i64>,
 }
 
 /// A solved-for-once description of the problem: nodes, arc costs, dimensions,
@@ -196,6 +202,8 @@ impl ModelBuilder {
             soft_max_cumul: vec![i64::MAX; vehicles],
             soft_max_cumul_cost: vec![0; vehicles],
             wait_cost: vec![0; vehicles],
+            max_wait: vec![i64::MAX; vehicles],
+            max_wait_at: vec![i64::MAX; self.node_count],
         });
         self
     }
@@ -252,6 +260,22 @@ impl ModelBuilder {
         assert!(v.index() < self.vehicles.len(), "vehicle out of range");
         assert!(cost_per_unit >= 0, "a negative wait cost rewards waiting");
         self.dimension_mut(name).wait_cost[v.index()] = cost_per_unit;
+    }
+
+    /// Vehicle `v` may stand idle at one stop for `cap` at most. Zero
+    /// forbids idling, `i64::MAX` is off.
+    pub fn max_wait(&mut self, name: &str, v: VehicleId, cap: i64) {
+        assert!(v.index() < self.vehicles.len(), "vehicle out of range");
+        assert!(cap >= 0, "a negative wait cap forbids arriving early");
+        self.dimension_mut(name).max_wait[v.index()] = cap;
+    }
+
+    /// Node `n` may hold a vehicle idle for `cap` at most, whichever
+    /// vehicle it is. A vehicle cap on the same dimension still applies.
+    pub fn max_wait_at(&mut self, name: &str, n: NodeId, cap: i64) {
+        assert!(n.index() < self.node_count, "node out of range");
+        assert!(cap >= 0, "a negative wait cap forbids arriving early");
+        self.dimension_mut(name).max_wait_at[n.index()] = cap;
     }
 
     /// Construction fails loudly if a node ends up forbidden on every
@@ -325,6 +349,7 @@ impl ModelBuilder {
                 d.soft_max_cumul.push(i64::MAX);
                 d.soft_max_cumul_cost.push(0);
                 d.wait_cost.push(0);
+                d.max_wait.push(i64::MAX);
             }
             Some(id)
         };
