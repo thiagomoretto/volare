@@ -175,3 +175,81 @@ fn walk_route_reads_arrival_wait_and_load_back() {
         "stops before the broken bound are visited"
     );
 }
+
+#[test]
+fn wait_past_the_vehicle_cap_is_infeasible() {
+    // Arrive at 1 at t=10, open at 15: a wait of five.
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait("time", VehicleId(0), 5);
+    let m = b.build();
+    assert!(eval_route(&m, &[NodeId(1)], VehicleId(0)).is_some());
+
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait("time", VehicleId(0), 4);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+}
+
+#[test]
+fn a_node_caps_its_own_wait() {
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait_at("time", NodeId(1), 4);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+
+    // A cap on the node the vehicle never waits at binds nothing.
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait_at("time", NodeId(2), 0);
+    let m = b.build();
+    assert!(eval_route(&m, &[NodeId(1), NodeId(2)], VehicleId(0)).is_some());
+}
+
+#[test]
+fn the_tighter_of_the_two_caps_binds() {
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait("time", VehicleId(0), 100);
+    b.max_wait_at("time", NodeId(1), 4);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait("time", VehicleId(0), 4);
+    b.max_wait_at("time", NodeId(1), 100);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+}
+
+#[test]
+fn a_zero_cap_forbids_idling() {
+    let mut b = builder();
+    b.max_wait("time", VehicleId(0), 0);
+    let m = b.build();
+    assert!(
+        eval_route(&m, &[NodeId(1)], VehicleId(0)).is_some(),
+        "no lower bound, no wait"
+    );
+
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 11, 100);
+    b.max_wait("time", VehicleId(0), 0);
+    let m = b.build();
+    assert_eq!(eval_route(&m, &[NodeId(1)], VehicleId(0)), None);
+}
+
+#[test]
+fn a_wait_cap_never_blocks_a_drop() {
+    let mut b = builder();
+    b.cumul_bounds("time", NodeId(1), 15, 100);
+    b.max_wait("time", VehicleId(0), 0);
+    b.max_wait_at("time", NodeId(1), 0);
+    b.allow_drop(NodeId(1), 999);
+    let m = b.build();
+    let sink = m.unserved_vehicle().unwrap();
+    assert_eq!(eval_route(&m, &[NodeId(1)], sink), Some(999));
+}
