@@ -6,6 +6,13 @@ use crate::eval::{Routes, eval_route};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
+/// An accepted improving move: which operator fired, and the second route it
+/// schanged.
+pub(super) struct Move {
+    pub operator: Operator,
+    pub other_route: Option<usize>,
+}
+
 /// First-improvement hill climb over relocate + swap + 2-opt, with don't-look
 /// bits: a node is only re-examined after a move touched its route. 2-opt*
 /// stays out of the per-node cascade — it fires once the fine operators reach
@@ -31,15 +38,27 @@ fn improving_move(
     r: usize,
     sx: &mut Scratch,
     route_stale: bool,
-) -> Option<(Operator, Option<usize>)> {
+) -> Option<Move> {
     if let Some(v) = try_relocate(m, sol, &eval, cost, u, r, sx) {
-        Some((Operator::Relocate, Some(v)))
+        Some(Move {
+            operator: Operator::Relocate,
+            other_route: Some(v),
+        })
     } else if let Some(v) = try_swap(m, sol, &eval, cost, u, r) {
-        Some((Operator::Swap, Some(v)))
+        Some(Move {
+            operator: Operator::Swap,
+            other_route: Some(v),
+        })
     } else if route_stale && try_two_opt(m, sol, &eval, cost, r) {
-        Some((Operator::TwoOpt, None))
+        Some(Move {
+            operator: Operator::TwoOpt,
+            other_route: None,
+        })
     } else if let Some(v) = try_or_opt(m, sol, &eval, cost, u, r, sx) {
-        Some((Operator::OrOpt, Some(v)))
+        Some(Move {
+            operator: Operator::OrOpt,
+            other_route: Some(v),
+        })
     } else {
         None
     }
@@ -88,8 +107,10 @@ pub(super) fn descend(
             // Every queued node is in exactly one route, so this never sees
             // the u32::MAX sentinel.
             let r = index[u.index()] as usize;
-            let Some((operator, other)) =
-                improving_move(m, sol, &eval, &mut cost, u, r, &mut sx, route_stale[r])
+            let Some(Move {
+                operator,
+                other_route,
+            }) = improving_move(m, sol, &eval, &mut cost, u, r, &mut sx, route_stale[r])
             else {
                 // No improvements, this reset route-level operator staleless and move on.
                 route_stale[r] = false;
@@ -101,7 +122,10 @@ pub(super) fn descend(
                 operator,
                 cost: cost.iter().sum(),
             });
-            for t in [Some(r), other.filter(|&v| v != r)].into_iter().flatten() {
+            for t in [Some(r), other_route.filter(|&v| v != r)]
+                .into_iter()
+                .flatten()
+            {
                 // The route has changed, any route-pass operator is now allowed.
                 route_stale[t] = true;
                 for &n in &sol[t] {
