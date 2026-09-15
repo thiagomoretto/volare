@@ -27,40 +27,42 @@ pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEven
     descend(m, sol, eval_route, log)
 }
 
+struct OperatorCtx<'a, E: RouteEval> {
+    m: &'a Model,
+    sol: &'a mut Routes,
+    eval: &'a E,
+    cost: &'a mut [Cost],
+    sx: &'a mut Scratch,
+}
+
 /// Fires a improving move: Cheapest operator first.
 #[inline]
-fn improving_move(
-    m: &Model,
-    sol: &mut Routes,
-    eval: &impl RouteEval,
-    cost: &mut Vec<Cost>,
+fn improving_move<E: RouteEval>(
+    c: &mut OperatorCtx<'_, E>,
     u: NodeId,
     r: usize,
-    sx: &mut Scratch,
     route_stale: bool,
 ) -> Option<Move> {
-    if let Some(v) = try_relocate(m, sol, &eval, cost, u, r, sx) {
+    if let Some(v) = try_relocate(c.m, c.sol, c.eval, c.cost, u, r, c.sx) {
         Some(Move {
             operator: Operator::Relocate,
             other_route: Some(v),
         })
-    } else if let Some(v) = try_swap(m, sol, &eval, cost, u, r) {
+    } else if let Some(v) = try_swap(c.m, c.sol, c.eval, c.cost, u, r) {
         Some(Move {
             operator: Operator::Swap,
             other_route: Some(v),
         })
-    } else if route_stale && try_two_opt(m, sol, &eval, cost, r) {
+    } else if route_stale && try_two_opt(c.m, c.sol, c.eval, c.cost, r) {
         Some(Move {
             operator: Operator::TwoOpt,
             other_route: None,
         })
-    } else if let Some(v) = try_or_opt(m, sol, &eval, cost, u, r, sx) {
-        Some(Move {
+    } else {
+        try_or_opt(c.m, c.sol, c.eval, c.cost, u, r, c.sx).map(|v| Move {
             operator: Operator::OrOpt,
             other_route: Some(v),
         })
-    } else {
-        None
     }
 }
 
@@ -88,7 +90,9 @@ pub(super) fn descend(
     // into them. Re-sweep everything until a whole sweep finds nothing.
     loop {
         // Future: Switch picking strategy.
+        // Now is going from 0...n. Deterministic order.
         let mut queue: VecDeque<NodeId> = sol.iter().flatten().copied().collect();
+
         // node -> route, rebuilt per sweep; a move re-stamps only the routes
         // it touched. Replaces an O(n) route scan per queue pop.
         for (r, route) in sol.iter().enumerate() {
@@ -110,7 +114,18 @@ pub(super) fn descend(
             let Some(Move {
                 operator,
                 other_route,
-            }) = improving_move(m, sol, &eval, &mut cost, u, r, &mut sx, route_stale[r])
+            }) = improving_move(
+                &mut OperatorCtx {
+                    m,
+                    sol,
+                    eval: &eval,
+                    cost: &mut cost,
+                    sx: &mut sx,
+                },
+                u,
+                r,
+                route_stale[r],
+            )
             else {
                 // No improvements, this reset route-level operator staleless and move on.
                 route_stale[r] = false;
