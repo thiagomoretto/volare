@@ -1,3 +1,4 @@
+use std::ops::ControlFlow;
 use std::time::Instant;
 
 use crate::eval::{Routes, eval_routes};
@@ -38,9 +39,14 @@ impl std::fmt::Display for Operator {
 }
 
 /// A progress point during a solve. Hand a callback to `solve_with`,
-/// `first_solution_with` or `local_search_with` to observe them; `search_log`
-/// builds one that prints progress lines. Costs are whole-solution
-/// totals.
+/// `first_solution_with`, `local_search_with` or `guided_local_search_with` to
+/// observe them; `search_log` builds one that prints progress lines. Costs are
+/// whole-solution totals.
+///
+/// The callback is also a search monitor: return `ControlFlow::Break(())` and
+/// the search stops at once, keeps the best solution found, and reports
+/// `Done`. Construction ignores it: there is no solution to return until every
+/// node is placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEvent {
     /// Construction placed every node; the first complete solution exists.
@@ -51,12 +57,17 @@ pub enum SearchEvent {
     /// than anything before it. `cost` is the true cost, never the penalized
     /// one the descent was reading.
     GuidedBest { iter: usize, cost: Cost },
-    /// Local search converged; the solution is final.
+    /// Guided local search finished round `iter`; `cost` is the true cost of
+    /// the round's own solution. Fires every round, improving or not, so a
+    /// monitor can stop a search that has stalled.
+    GuidedRound { iter: usize, cost: Cost },
+    /// The search converged or the callback stopped it; the solution is final.
     Done { cost: Cost },
 }
 
-/// An event callback that prints progress lines to stderr,
-/// prefixed with elapsed time since the closure was created:
+/// An event callback that prints progress lines to stderr, prefixed with
+/// elapsed time since the closure was created. It skips `GuidedRound`, which
+/// fires too often to read, and never stops the search:
 ///
 /// ```text
 /// #search    0.012s  relocate improved, cost 5900
@@ -72,7 +83,7 @@ pub enum SearchEvent {
 ///     search_log(),
 /// );
 /// ```
-pub fn search_log() -> impl FnMut(SearchEvent) {
+pub fn search_log() -> impl FnMut(SearchEvent) -> ControlFlow<()> {
     let started = Instant::now();
     move |event| {
         let t = started.elapsed().as_secs_f64();
@@ -86,8 +97,10 @@ pub fn search_log() -> impl FnMut(SearchEvent) {
             SearchEvent::GuidedBest { iter, cost } => {
                 eprintln!("#search {t:7.3}s  gls round {iter}, new best cost {cost}")
             }
+            SearchEvent::GuidedRound { .. } => {}
             SearchEvent::Done { cost } => eprintln!("#search {t:7.3}s  done, cost {cost}"),
         }
+        ControlFlow::Continue(())
     }
 }
 
@@ -132,16 +145,17 @@ impl Solution {
 /// penalties included, is owned by the call. One model can therefore back any
 /// number of solves running at once.
 pub fn solve(m: &Model, construct: Construct, improve: Improve) -> Solution {
-    solve_with(m, construct, improve, |_| {})
+    solve_with(m, construct, improve, |_| ControlFlow::Continue(()))
 }
 
-/// `solve` with an observer for search progress. The callback runs on the
-/// solver thread; keep it cheap or it becomes part of the measured time.
+/// `solve` with a monitor: it sees every `SearchEvent` and can stop the search
+/// early (see `SearchEvent`). The callback runs on the solver thread; keep it
+/// cheap or it becomes part of the measured time.
 pub fn solve_with(
     m: &Model,
     construct: Construct,
     improve: Improve,
-    mut log: impl FnMut(SearchEvent),
+    mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
 ) -> Solution {
     let mut sol = first_solution_with(m, construct, &mut log);
     match improve {

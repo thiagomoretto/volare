@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::operators::{try_or_opt, try_two_opt_star};
 use super::*;
 use crate::eval::{eval_route, visits_all_nodes};
@@ -23,22 +25,22 @@ fn line_model() -> Model {
 #[test]
 fn randomized_insertion_is_seeded_not_arbitrary() {
     let m = line_model();
-    let greedy = cheapest_insertion(&m, |_| {});
+    let greedy = cheapest_insertion(&m, |_| ControlFlow::Continue(()));
 
     assert_eq!(
-        greedy_randomized(&m, 7, 1, |_| {}),
+        greedy_randomized(&m, 7, 1, |_| ControlFlow::Continue(())),
         greedy,
         "k = 1 is greedy"
     );
     assert_eq!(
-        greedy_randomized(&m, 7, 3, |_| {}),
-        greedy_randomized(&m, 7, 3, |_| {}),
+        greedy_randomized(&m, 7, 3, |_| ControlFlow::Continue(())),
+        greedy_randomized(&m, 7, 3, |_| ControlFlow::Continue(())),
         "same seed, same solution"
     );
 
     let mut diverged = 0;
     for seed in 0..32 {
-        let sol = greedy_randomized(&m, seed, 3, |_| {});
+        let sol = greedy_randomized(&m, seed, 3, |_| ControlFlow::Continue(()));
         assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
         assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
         if sol != greedy {
@@ -67,7 +69,7 @@ fn randomized_insertion_respects_drops_and_forbids() {
     let m = b.build();
 
     for seed in 0..16 {
-        let sol = greedy_randomized(&m, seed, 4, |_| {});
+        let sol = greedy_randomized(&m, seed, 4, |_| ControlFlow::Continue(()));
         assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
         assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
         assert!(
@@ -131,6 +133,7 @@ fn swap_finds_what_relocate_cannot() {
         if let SearchEvent::Improvement { operator, .. } = e {
             ops.push(operator);
         }
+        ControlFlow::Continue(())
     });
     assert!(
         ops.contains(&Operator::Swap),
@@ -266,7 +269,8 @@ fn search_events_trace_the_solve() {
     let m = line_model();
     let mut events = Vec::new();
     let sol = solve_with(&m, Construct::CheapestInsertion, Improve::HillClimb, |e| {
-        events.push(e)
+        events.push(e);
+        ControlFlow::Continue(())
     });
 
     let SearchEvent::FirstSolution { cost: first } = events[0] else {
@@ -289,4 +293,64 @@ fn search_events_trace_the_solve() {
     // The silent entry point solves to the same cost.
     let silent = solve(&m, Construct::CheapestInsertion, Improve::HillClimb);
     assert_eq!(silent.cost, done);
+}
+
+/// `Break` ends the search on the spot, and the answer is still the best one
+/// seen, not whatever the stopped round held.
+#[test]
+fn monitor_stops_guided_search() {
+    let m = line_model();
+    let (mut rounds, mut best, mut done) = (0, i64::MAX, None);
+    let sol = solve_with(
+        &m,
+        Construct::CheapestInsertion,
+        Improve::Gls { iters: 1000 },
+        |e| {
+            match e {
+                SearchEvent::GuidedBest { cost, .. } => best = cost,
+                SearchEvent::GuidedRound { .. } => rounds += 1,
+                SearchEvent::Done { cost } => done = Some(cost),
+                _ => {}
+            }
+            if rounds == 5 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    );
+    assert_eq!(rounds, 5);
+    assert_eq!(done, Some(best));
+    assert_eq!(sol.cost, best);
+}
+
+#[test]
+fn monitor_stops_hill_climb() {
+    let m = line_model();
+    let start = vec![
+        vec![NodeId(5), NodeId(1), NodeId(3)],
+        vec![NodeId(2), NodeId(4)],
+    ];
+    let improvements = |stop: bool| {
+        let mut sol = start.clone();
+        let mut costs = Vec::new();
+        local_search_with(&m, &mut sol, |e| {
+            if let SearchEvent::Improvement { cost, .. } = e {
+                costs.push(cost);
+                if stop {
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        (costs, eval_routes(&m, &sol))
+    };
+    let (all, _) = improvements(false);
+    assert!(
+        all.len() > 1,
+        "start must take more than one move, took {all:?}"
+    );
+    let (first, cost) = improvements(true);
+    assert_eq!(first, all[..1]);
+    assert_eq!(cost, Some(first[0]));
 }

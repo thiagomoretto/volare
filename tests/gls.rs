@@ -6,6 +6,7 @@
 //! the test covered.
 
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use volare::cvrplib::{Instance, cvrp_model};
@@ -19,7 +20,9 @@ fn gls_improves_on_the_hill_climb() {
     let n = inst.coords.len();
     let m = cvrp_model(&inst, n - 1);
 
-    let mut hill = first_solution_with(&m, Construct::CheapestInsertion, |_| {});
+    let mut hill = first_solution_with(&m, Construct::CheapestInsertion, |_| {
+        ControlFlow::Continue(())
+    });
     local_search(&m, &mut hill);
     let hill_cost = eval_routes(&m, &hill).expect("infeasible hill climb");
 

@@ -12,3 +12,4 @@ cargo run --release --example <name>
 | [`forbidden_nodes`](forbidden_nodes.rs) | Block a vehicle from serving a customer with `forbid`, and see the solver route around it |
 | [`precedence`](precedence.rs) | Order two stops within a route with `precede`, and see a pair split across vehicles go unordered |
 | [`time_windows`](time_windows.rs) | Serve each stop inside its window with `cumul_bounds`, price idle time with `wait_cost`, and read the timetable back with `walk_route` |
+| [`early_stop`](early_stop.rs) | Stop a guided search from the `solve_with` callback once it finds no gain of 1% or more for a few seconds |

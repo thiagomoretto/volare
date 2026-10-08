@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::ops::ControlFlow;
 
 use super::SearchEvent;
 use super::descent::{descend, local_search};
@@ -118,11 +119,12 @@ fn eval_route_penalized(m: &Model, p: &Penalties, route: &[NodeId], v: VehicleId
 /// full sweep anyway — tighten that first, then seed. Both are worth it when
 /// the iteration count needs to go past a few hundred.
 pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
-    guided_local_search_with(m, sol, iters, |_| {})
+    guided_local_search_with(m, sol, iters, |_| ControlFlow::Continue(()))
 }
 
-/// `guided_local_search` reporting a `GuidedBest` per new best true cost and a
-/// final `Done`.
+/// `guided_local_search` reporting a `GuidedBest` per new best true cost, a
+/// `GuidedRound` per round, and a final `Done`. Stopped early by the callback,
+/// it still returns the best solution so far.
 ///
 /// The descents themselves run silent on purpose. Every round after the first
 /// is minimizing penalized cost, so its `Improvement` costs would be numbers no
@@ -132,7 +134,7 @@ pub fn guided_local_search_with(
     m: &Model,
     sol: &mut Routes,
     iters: usize,
-    mut log: impl FnMut(SearchEvent),
+    mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
 ) {
     local_search(m, sol);
 
@@ -149,7 +151,7 @@ pub fn guided_local_search_with(
             arc_cost += arcs;
         }
     }
-    log(SearchEvent::GuidedBest {
+    let mut flow = log(SearchEvent::GuidedBest {
         iter: 0,
         cost: best_cost,
     });
@@ -162,12 +164,15 @@ pub fn guided_local_search_with(
     let mut penalties = Penalties::new(lambda);
 
     for iter in 1..=iters {
+        if flow.is_break() {
+            break;
+        }
         penalize_worst_arcs(m, &mut penalties, sol);
         descend(
             m,
             sol,
             |m, route, v| eval_route_penalized(m, &penalties, route, v),
-            |_| {},
+            |_| ControlFlow::Continue(()),
         );
 
         // The descent just optimized penalized cost, which is not the cost we
@@ -176,13 +181,16 @@ pub fn guided_local_search_with(
         if cost < best_cost {
             best_cost = cost;
             best.clone_from(sol);
-            log(SearchEvent::GuidedBest { iter, cost });
+            flow = log(SearchEvent::GuidedBest { iter, cost });
+        }
+        if flow.is_continue() {
+            flow = log(SearchEvent::GuidedRound { iter, cost });
         }
     }
 
     // `penalties` dies here; no caller can ever see a penalized cost.
     *sol = best;
-    log(SearchEvent::Done { cost: best_cost });
+    let _ = log(SearchEvent::Done { cost: best_cost });
 }
 
 /// Penalize every arc of `sol` with maximal utility `cost / (1 + penalty)` —
