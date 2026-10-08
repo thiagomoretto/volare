@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 
 use super::operators::{try_or_opt, try_relocate, try_swap, try_two_opt, try_two_opt_star};
 use super::{Operator, RouteEval, Scratch, SearchEvent};
@@ -18,12 +19,16 @@ pub(super) struct Move {
 /// stays out of the per-node cascade — it fires once the fine operators reach
 /// a fixpoint, as a partition-level kick, then the sweep resumes.
 pub fn local_search(m: &Model, sol: &mut Routes) {
-    local_search_with(m, sol, |_| {})
+    local_search_with(m, sol, |_| ControlFlow::Continue(()))
 }
 
 /// `local_search` reporting an `Improvement` per accepted move and a final
 /// `Done`.
-pub fn local_search_with(m: &Model, sol: &mut Routes, log: impl FnMut(SearchEvent)) {
+pub fn local_search_with(
+    m: &Model,
+    sol: &mut Routes,
+    log: impl FnMut(SearchEvent) -> ControlFlow<()>,
+) {
     descend(m, sol, eval_route, log)
 }
 
@@ -72,7 +77,7 @@ pub(super) fn descend(
     m: &Model,
     sol: &mut Routes,
     eval: impl RouteEval,
-    mut log: impl FnMut(SearchEvent),
+    mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
 ) {
     let mut cost: Vec<Cost> = (0..sol.len())
         .map(|v| eval(m, &sol[v], VehicleId(v as u32)).expect("infeasible start solution"))
@@ -84,11 +89,18 @@ pub(super) fn descend(
     // node, so without this it rescans one route once per node in it.
     let mut route_stale = vec![true; sol.len()];
     let mut sx = Scratch::default();
+    let mut stop = |operator, cost: &[Cost]| {
+        log(SearchEvent::Improvement {
+            operator,
+            cost: cost.iter().sum(),
+        })
+        .is_break()
+    };
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
     // into them. Re-sweep everything until a whole sweep finds nothing.
-    loop {
+    'search: loop {
         // Future: Switch picking strategy.
         // Now is going from 0...n. Deterministic order.
         let mut queue: VecDeque<NodeId> = sol.iter().flatten().copied().collect();
@@ -133,10 +145,9 @@ pub(super) fn descend(
             };
 
             improved = true;
-            log(SearchEvent::Improvement {
-                operator,
-                cost: cost.iter().sum(),
-            });
+            if stop(operator, &cost) {
+                break 'search;
+            }
             for t in [Some(r), other_route.filter(|&v| v != r)]
                 .into_iter()
                 .flatten()
@@ -166,19 +177,18 @@ pub(super) fn descend(
                     route_stale[r] = true;
                     route_stale[v] = true;
                     improved = true;
-                    log(SearchEvent::Improvement {
-                        operator: Operator::TwoOptStar,
-                        cost: cost.iter().sum(),
-                    });
+                    if stop(Operator::TwoOptStar, &cost) {
+                        break 'search;
+                    }
                 }
             }
         }
 
         if !improved {
-            log(SearchEvent::Done {
-                cost: cost.iter().sum(),
-            });
-            return;
+            break;
         }
     }
+    let _ = log(SearchEvent::Done {
+        cost: cost.iter().sum(),
+    });
 }

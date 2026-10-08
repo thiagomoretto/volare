@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -145,7 +146,9 @@ fn bench_reference(
                     seed: start as u64,
                     k: if restarts == 1 { 1 } else { rcl },
                 };
-                let mut sol = first_solution_with(&model, construct, &mut log);
+                let mut sol = first_solution_with(&model, construct, |e| {
+                    let _ = log(e);
+                });
                 let ctor = eval_routes(&model, &sol).expect("infeasible construction");
                 match gls {
                     Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
@@ -466,7 +469,11 @@ fn free_fleet(inst: &Instance) -> usize {
     inst.coords.len() - 1
 }
 
-fn solve(m: &Model, gls: Option<usize>, log: &mut dyn FnMut(SearchEvent)) -> Solution {
+fn solve(
+    m: &Model,
+    gls: Option<usize>,
+    log: &mut dyn FnMut(SearchEvent) -> ControlFlow<()>,
+) -> Solution {
     let improve = match gls {
         Some(iters) => Improve::Gls { iters },
         None => Improve::HillClimb,
@@ -474,11 +481,11 @@ fn solve(m: &Model, gls: Option<usize>, log: &mut dyn FnMut(SearchEvent)) -> Sol
     solve_with(m, Construct::CheapestInsertion, improve, log)
 }
 
-fn logger(on: bool) -> Box<dyn FnMut(SearchEvent)> {
+fn logger(on: bool) -> Box<dyn FnMut(SearchEvent) -> ControlFlow<()>> {
     if on {
         Box::new(search_log())
     } else {
-        Box::new(|_| {})
+        Box::new(|_| ControlFlow::Continue(()))
     }
 }
 

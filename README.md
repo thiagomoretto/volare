@@ -60,7 +60,10 @@ Arc costs are closures, so distances can come from coordinates, a precomputed
 matrix or a live routing service. The solver itself never sees a coordinate.
 
 `solve_with` takes the same arguments plus a callback, if you want to watch the
-search progress. `search_log()` is a ready made one that prints to stderr.
+search progress. `search_log()` is a ready made one that prints to stderr. The
+callback can also stop the search: return `ControlFlow::Break(())` and the
+solver hands back the best solution so far. The
+[`early_stop`](examples/early_stop.rs) example stops once the search stalls.
 
 Full API docs with `cargo doc --open`.
 
