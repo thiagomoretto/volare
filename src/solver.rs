@@ -43,10 +43,12 @@ impl std::fmt::Display for Operator {
 /// observe them; `search_log` builds one that prints progress lines. Costs are
 /// whole-solution totals.
 ///
-/// The callback is also a search monitor: return `ControlFlow::Break(())` and
-/// the search stops at once, keeps the best solution found, and reports
-/// `Done`. Construction ignores it: there is no solution to return until every
-/// node is placed.
+/// The callback handed to `solve_with`, `local_search_with` or
+/// `guided_local_search_with` is also a search monitor: return
+/// `ControlFlow::Break(())` and the search stops at once, keeps the best
+/// solution found, and reports `Done`. Construction cannot stop before every
+/// node is placed, so `first_solution_with` takes a plain observer; a `Break`
+/// on `FirstSolution` makes `solve_with` skip the improvement phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEvent {
     /// Construction placed every node; the first complete solution exists.
@@ -157,12 +159,18 @@ pub fn solve_with(
     improve: Improve,
     mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
 ) -> Solution {
-    let mut sol = first_solution_with(m, construct, &mut log);
-    match improve {
-        Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
-        Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
+    let mut stopped = false;
+    let mut sol = first_solution_with(m, construct, |e| stopped = log(e).is_break());
+    if !stopped {
+        match improve {
+            Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
+            Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
+        }
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
+    if stopped {
+        let _ = log(SearchEvent::Done { cost });
+    }
     Solution { routes: sol, cost }
 }
 

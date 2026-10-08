@@ -1,5 +1,3 @@
-use std::ops::ControlFlow;
-
 use super::{Construct, SearchEvent, candidate_vehicles, with_front};
 use crate::eval::{Routes, eval_route};
 use crate::model::Model;
@@ -8,7 +6,7 @@ use crate::types::{Cost, NodeId, VehicleId};
 pub fn first_solution_with(
     m: &Model,
     construct: Construct,
-    log: impl FnMut(SearchEvent) -> ControlFlow<()>,
+    log: impl FnMut(SearchEvent),
 ) -> Routes {
     match construct {
         Construct::CheapestInsertion => cheapest_insertion(m, log),
@@ -86,29 +84,19 @@ impl Rng {
 }
 
 /// Always the cheapest insertion on offer.
-pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent) -> ControlFlow<()>) -> Routes {
+pub fn cheapest_insertion(m: &Model, log: impl FnMut(SearchEvent)) -> Routes {
     insertion(m, 1, 0, log)
 }
 
 /// Draws from the `k` cheapest. Not a better first solution, a different one
 /// per seed, so callers can race several and keep the cheapest.
-pub fn greedy_randomized(
-    m: &Model,
-    seed: u64,
-    k: usize,
-    log: impl FnMut(SearchEvent) -> ControlFlow<()>,
-) -> Routes {
+pub fn greedy_randomized(m: &Model, seed: u64, k: usize, log: impl FnMut(SearchEvent)) -> Routes {
     insertion(m, k, seed, log)
 }
 
 /// Insertion with a candidate list of width `k`. The cache below is
 /// indifferent to the draw: one route still grows per step.
-fn insertion(
-    m: &Model,
-    k: usize,
-    seed: u64,
-    mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
-) -> Routes {
+fn insertion(m: &Model, k: usize, seed: u64, mut log: impl FnMut(SearchEvent)) -> Routes {
     let nv = m.vehicle_count();
     let mut rng = Rng(seed);
     let mut sol: Routes = vec![Vec::new(); nv];
@@ -212,7 +200,7 @@ fn insertion(
             dirty.iter_mut().for_each(|d| *d = true);
         }
     }
-    let _ = log(SearchEvent::FirstSolution {
+    log(SearchEvent::FirstSolution {
         cost: cost.iter().sum(),
     });
     sol

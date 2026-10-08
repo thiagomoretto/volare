@@ -146,7 +146,9 @@ fn bench_reference(
                     seed: start as u64,
                     k: if restarts == 1 { 1 } else { rcl },
                 };
-                let mut sol = first_solution_with(&model, construct, &mut log);
+                let mut sol = first_solution_with(&model, construct, |e| {
+                    let _ = log(e);
+                });
                 let ctor = eval_routes(&model, &sol).expect("infeasible construction");
                 match gls {
                     Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),

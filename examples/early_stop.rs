@@ -10,42 +10,21 @@
 //! has landed for `PATIENCE`. Set `MIN_GAIN_PCT` to 0 to count any
 //! improvement at all.
 
+use std::fs;
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use volare::{Construct, Cost, Improve, ModelBuilder, NodeId, SearchEvent, search_log, solve_with};
+use volare::cvrplib::{Instance, cvrp_model};
+use volare::{Construct, Cost, Improve, SearchEvent, search_log, solve_with};
 
 const PATIENCE: Duration = Duration::from_secs(2);
 const MIN_GAIN_PCT: Cost = 1;
 
 fn main() {
-    // Random stops on a 1000 x 1000 square, from a fixed seed.
-    let mut seed: u64 = 42;
-    let mut next = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (seed >> 33) as f64 / (1u64 << 31) as f64 * 1000.0
-    };
-    let n = 201;
-    let coords: Vec<(f64, f64)> = (0..n).map(|_| (next(), next())).collect();
-    let demands: Vec<i64> = (0..n)
-        .map(|i| if i == 0 { 0 } else { 1 + i as i64 % 9 })
-        .collect();
-
-    let mut b = ModelBuilder::new(n);
-    let cost = b.cost_class(move |from, to| {
-        let (p, q) = (coords[from.index()], coords[to.index()]);
-        (p.0 - q.0).hypot(p.1 - q.1).round() as i64
-    });
-    let fleet = 40;
-    for _ in 0..fleet {
-        b.vehicle(NodeId(0), NodeId(0), cost);
-    }
-    b.dimension(
-        "demand",
-        move |_from, to| demands[to.index()],
-        vec![50; fleet],
-    );
-    let model = b.build();
+    let vrp = Path::new(env!("CARGO_MANIFEST_DIR")).join("instances/X-n101-k25.vrp");
+    let inst = Instance::parse(&fs::read_to_string(&vrp).unwrap());
+    let model = cvrp_model(&inst, inst.coords.len() - 1);
 
     let started = Instant::now();
     let mut log = search_log();

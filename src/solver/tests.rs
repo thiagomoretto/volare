@@ -25,22 +25,22 @@ fn line_model() -> Model {
 #[test]
 fn randomized_insertion_is_seeded_not_arbitrary() {
     let m = line_model();
-    let greedy = cheapest_insertion(&m, |_| ControlFlow::Continue(()));
+    let greedy = cheapest_insertion(&m, |_| {});
 
     assert_eq!(
-        greedy_randomized(&m, 7, 1, |_| ControlFlow::Continue(())),
+        greedy_randomized(&m, 7, 1, |_| {}),
         greedy,
         "k = 1 is greedy"
     );
     assert_eq!(
-        greedy_randomized(&m, 7, 3, |_| ControlFlow::Continue(())),
-        greedy_randomized(&m, 7, 3, |_| ControlFlow::Continue(())),
+        greedy_randomized(&m, 7, 3, |_| {}),
+        greedy_randomized(&m, 7, 3, |_| {}),
         "same seed, same solution"
     );
 
     let mut diverged = 0;
     for seed in 0..32 {
-        let sol = greedy_randomized(&m, seed, 3, |_| ControlFlow::Continue(()));
+        let sol = greedy_randomized(&m, seed, 3, |_| {});
         assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
         assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
         if sol != greedy {
@@ -69,7 +69,7 @@ fn randomized_insertion_respects_drops_and_forbids() {
     let m = b.build();
 
     for seed in 0..16 {
-        let sol = greedy_randomized(&m, seed, 4, |_| ControlFlow::Continue(()));
+        let sol = greedy_randomized(&m, seed, 4, |_| {});
         assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
         assert!(eval_routes(&m, &sol).is_some(), "seed {seed} is infeasible");
         assert!(
@@ -322,6 +322,26 @@ fn monitor_stops_guided_search() {
     assert_eq!(rounds, 5);
     assert_eq!(done, Some(best));
     assert_eq!(sol.cost, best);
+}
+
+#[test]
+fn monitor_stops_before_improving() {
+    let m = line_model();
+    let mut events = Vec::new();
+    let sol = solve_with(&m, Construct::CheapestInsertion, Improve::HillClimb, |e| {
+        events.push(e);
+        ControlFlow::Break(())
+    });
+    let first = cheapest_insertion(&m, |_| {});
+    let cost = eval_routes(&m, &first).unwrap();
+    assert_eq!(sol.routes, first);
+    assert_eq!(
+        events,
+        [
+            SearchEvent::FirstSolution { cost },
+            SearchEvent::Done { cost }
+        ]
+    );
 }
 
 #[test]

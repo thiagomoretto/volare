@@ -151,10 +151,11 @@ pub fn guided_local_search_with(
             arc_cost += arcs;
         }
     }
-    let mut flow = log(SearchEvent::GuidedBest {
+    let mut stopped = log(SearchEvent::GuidedBest {
         iter: 0,
         cost: best_cost,
-    });
+    })
+    .is_break();
 
     // Scale one penalty into arc-cost units, so lambda * penalty is comparable
     // to the distances the operators are trading against it. Soft-bound
@@ -164,7 +165,7 @@ pub fn guided_local_search_with(
     let mut penalties = Penalties::new(lambda);
 
     for iter in 1..=iters {
-        if flow.is_break() {
+        if stopped {
             break;
         }
         penalize_worst_arcs(m, &mut penalties, sol);
@@ -181,11 +182,9 @@ pub fn guided_local_search_with(
         if cost < best_cost {
             best_cost = cost;
             best.clone_from(sol);
-            flow = log(SearchEvent::GuidedBest { iter, cost });
+            stopped = log(SearchEvent::GuidedBest { iter, cost }).is_break();
         }
-        if flow.is_continue() {
-            flow = log(SearchEvent::GuidedRound { iter, cost });
-        }
+        stopped = stopped || log(SearchEvent::GuidedRound { iter, cost }).is_break();
     }
 
     // `penalties` dies here; no caller can ever see a penalized cost.

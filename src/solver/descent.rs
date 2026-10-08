@@ -89,6 +89,13 @@ pub(super) fn descend(
     // node, so without this it rescans one route once per node in it.
     let mut route_stale = vec![true; sol.len()];
     let mut sx = Scratch::default();
+    let mut stop = |operator, cost: &[Cost]| {
+        log(SearchEvent::Improvement {
+            operator,
+            cost: cost.iter().sum(),
+        })
+        .is_break()
+    };
 
     // Draining the queue is not a fixpoint: a move only re-wakes the two
     // routes it touched, and a node elsewhere may now have an improving move
@@ -138,12 +145,7 @@ pub(super) fn descend(
             };
 
             improved = true;
-            if log(SearchEvent::Improvement {
-                operator,
-                cost: cost.iter().sum(),
-            })
-            .is_break()
-            {
+            if stop(operator, &cost) {
                 break 'search;
             }
             for t in [Some(r), other_route.filter(|&v| v != r)]
@@ -175,12 +177,7 @@ pub(super) fn descend(
                     route_stale[r] = true;
                     route_stale[v] = true;
                     improved = true;
-                    if log(SearchEvent::Improvement {
-                        operator: Operator::TwoOptStar,
-                        cost: cost.iter().sum(),
-                    })
-                    .is_break()
-                    {
+                    if stop(Operator::TwoOptStar, &cost) {
                         break 'search;
                     }
                 }
