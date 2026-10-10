@@ -104,7 +104,7 @@ bound expresses the other.
 | | |
 | --- | --- |
 | Construction | cheapest insertion |
-| Improvement | hill climb, or guided local search on top of it |
+| Improvement | hill climb, guided local search on top of it, or ruin and recreate (SISR) |
 | Operators | relocate, swap, 2-opt, 2-opt* |
 | Constraints | per-vehicle cumul limits, hard windows per node, per-vehicle node exclusion, optional nodes with a drop penalty |
 | Input | CVRPLIB `EUC_2D` files, Solomon VRPTW files with the DIMACS metric |
@@ -112,17 +112,19 @@ bound expresses the other.
 ## Benchmarks
 
 Mean gap against the best known cost across the 43 CVRPLIB X instances with n up
-to 300, measured at commit `b0995dc`:
+to 300, measured at commit `b0995dc` (ruin and recreate at the commit that added it):
 
 | Strategy | Mean gap |
 | --- | --- |
 | cheapest insertion | 25.2% |
 | hill climb | 9.5% |
 | guided local search, 300 rounds | 5.5% |
+| ruin and recreate, 50,000 rounds | 1.2% |
 
 ```sh
 cargo run --release --bin bench -- X-n              # hill climb, about 2 seconds
 cargo run --release --bin bench -- X-n --gls=300    # about 3 minutes
+cargo run --release --bin bench -- X-n --sisr=50000 # about 3 minutes
 ```
 
 Drop the `X-n` filter and the run also takes in the five Belgium XL instances,

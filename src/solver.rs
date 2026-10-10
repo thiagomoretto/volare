@@ -9,12 +9,14 @@ mod construct;
 mod descent;
 mod gls;
 mod operators;
+mod sisr;
 #[cfg(test)]
 mod tests;
 
 pub use construct::{cheapest_insertion, first_solution_with, greedy_randomized};
 pub use descent::{local_search, local_search_with};
 pub use gls::{guided_local_search, guided_local_search_with};
+pub use sisr::{ruin_recreate, ruin_recreate_with};
 
 /// The neighborhood operator that accepted an improving move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,13 +65,19 @@ pub enum SearchEvent {
     /// the round's own solution. Fires every round, improving or not, so a
     /// monitor can stop a search that has stalled.
     GuidedRound { iter: usize, cost: Cost },
+    /// Ruin and recreate finished round `iter` holding a solution cheaper
+    /// than anything before it.
+    SisrBest { iter: usize, cost: Cost },
+    /// Ruin and recreate finished round `iter`; `cost` is the solution the
+    /// search now holds, which annealing may have let get worse.
+    SisrRound { iter: usize, cost: Cost },
     /// The search converged or the callback stopped it; the solution is final.
     Done { cost: Cost },
 }
 
 /// An event callback that prints progress lines to stderr, prefixed with
-/// elapsed time since the closure was created. It skips `GuidedRound`, which
-/// fires too often to read, and never stops the search:
+/// elapsed time since the closure was created. It skips `GuidedRound` and
+/// `SisrRound`, which fire too often to read, and never stops the search:
 ///
 /// ```text
 /// #search    0.012s  relocate improved, cost 5900
@@ -99,7 +107,10 @@ pub fn search_log() -> impl FnMut(SearchEvent) -> ControlFlow<()> {
             SearchEvent::GuidedBest { iter, cost } => {
                 eprintln!("#search {t:7.3}s  gls round {iter}, new best cost {cost}")
             }
-            SearchEvent::GuidedRound { .. } => {}
+            SearchEvent::SisrBest { iter, cost } => {
+                eprintln!("#search {t:7.3}s  sisr round {iter}, new best cost {cost}")
+            }
+            SearchEvent::GuidedRound { .. } | SearchEvent::SisrRound { .. } => {}
             SearchEvent::Done { cost } => eprintln!("#search {t:7.3}s  done, cost {cost}"),
         }
         ControlFlow::Continue(())
@@ -118,12 +129,17 @@ pub enum Construct {
 }
 
 /// How that solution is then made cheaper.
+#[derive(Debug, Clone, Copy)]
 pub enum Improve {
     /// Descend to the first local optimum and stop.
     HillClimb,
     /// Guided local search: keep descending, penalizing the arcs that keep
     /// coming back, for `iters` rounds.
     Gls { iters: usize },
+    /// Ruin and recreate: cut strings of nearby customers out, reinsert them,
+    /// accept under simulated annealing, for `iters` rounds. Same seed, same
+    /// solution.
+    Sisr { iters: usize, seed: u64 },
 }
 
 /// `cost` is the true cost — never the penalized number a GLS descent was
@@ -165,6 +181,7 @@ pub fn solve_with(
         match improve {
             Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
             Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
+            Improve::Sisr { iters, seed } => ruin_recreate_with(m, &mut sol, iters, seed, &mut log),
         }
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");

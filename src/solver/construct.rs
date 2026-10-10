@@ -64,11 +64,11 @@ fn best_over(
 }
 
 /// SplitMix64. Not cryptographic. Seeds reproduce solutions, no dependency.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
     #[inline]
-    fn next(&mut self) -> u64 {
+    pub(super) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -78,7 +78,7 @@ impl Rng {
 
     /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
     #[inline]
-    fn below(&mut self, n: usize) -> usize {
+    pub(super) fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 }

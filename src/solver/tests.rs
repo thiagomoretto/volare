@@ -374,3 +374,43 @@ fn monitor_stops_hill_climb() {
     assert_eq!(first, all[..1]);
     assert_eq!(cost, Some(first[0]));
 }
+
+/// Ruin and recreate keeps every constraint the evaluator enforces, never
+/// returns worse than its start, and a seed reproduces its answer.
+#[test]
+fn ruin_recreate_is_seeded_feasible_and_monotone() {
+    let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+    let mut b = ModelBuilder::new(9);
+    let cost = b.cost_class(dist);
+    let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.forbid(v0, NodeId(1));
+    b.dimension(
+        "load",
+        |_from, to| if to == NodeId(0) { 0 } else { 1 },
+        vec![3, 3, 3],
+    );
+    b.allow_drop(NodeId(8), 15);
+    let m = b.build();
+
+    let start = cheapest_insertion(&m, |_| {});
+    let start_cost = eval_routes(&m, &start).unwrap();
+    let run = |seed| {
+        let mut sol = start.clone();
+        ruin_recreate(&m, &mut sol, 500, seed);
+        sol
+    };
+
+    for seed in 0..8 {
+        let sol = run(seed);
+        assert_eq!(sol, run(seed), "seed {seed} did not reproduce");
+        assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
+        let c = eval_routes(&m, &sol).expect("infeasible result");
+        assert!(c <= start_cost, "seed {seed} returned worse than its start");
+        assert!(
+            !sol[v0.index()].contains(&NodeId(1)),
+            "seed {seed} put node 1 on the vehicle that forbids it"
+        );
+    }
+}
