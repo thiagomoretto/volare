@@ -234,3 +234,29 @@ fn with_front(route: &[NodeId], node: NodeId, out: &mut Vec<NodeId>) {
     out.push(node);
     out.extend_from_slice(route);
 }
+
+/// SplitMix64. Not cryptographic. Seeds reproduce solutions, no dependency.
+struct Rng(u64);
+
+impl Rng {
+    #[inline]
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
+    #[inline]
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    /// A draw from the unit exponential, `-ln U` for `U` in `(0, 1]`.
+    fn exp1(&mut self) -> f64 {
+        let u = ((self.next() >> 11) + 1) as f64 / (1u64 << 53) as f64;
+        -u.ln()
+    }
+}

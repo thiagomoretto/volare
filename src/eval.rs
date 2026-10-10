@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::model::{Dimension, Model, Vehicle};
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -12,8 +14,7 @@ pub type Routes = Vec<Vec<NodeId>>;
 /// in the search module, never inside this loop.
 ///
 /// Feasibility is a full forward pass, O(route length), recomputed on every
-/// call. That is the deliberate ceiling; to lift it, cache cumul prefixes
-/// per route.
+/// call. `RouteCache` prices a single insertion without it.
 #[inline]
 pub fn eval_route(m: &Model, route: &[NodeId], v: VehicleId) -> Option<Cost> {
     let (arcs, soft) = eval_route_split(m, route, v)?;
@@ -27,10 +28,7 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
         return Some((0, 0));
     }
     let veh = m.vehicle(v);
-
-    // The early-out keeps an unrestricted vehicle at one branch per call;
-    // the scan itself is one bit test per node.
-    if !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n)) {
+    if forbids_any(veh, route) {
         return None;
     }
 
@@ -48,13 +46,26 @@ pub fn eval_route_split(m: &Model, route: &[NodeId], v: VehicleId) -> Option<(Co
         }
     }
 
+    Some((route_arcs(m, veh, route), soft))
+}
+
+/// The early-out keeps an unrestricted vehicle at one branch per call; the
+/// scan itself is one bit test per node.
+#[inline]
+fn forbids_any(veh: &Vehicle, route: &[NodeId]) -> bool {
+    !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n))
+}
+
+/// Arc cost of `route` from the vehicle's start to its end.
+#[inline]
+fn route_arcs(m: &Model, veh: &Vehicle, route: &[NodeId]) -> Cost {
     let mut cost = 0;
     let mut prev = veh.start;
     for &node in route.iter().chain(std::iter::once(&veh.end)) {
         cost += m.eval(veh.cost_class, prev, node);
         prev = node;
     }
-    Some((cost, soft))
+    cost
 }
 
 /// Forward pass of `route` on `d`, `false` once a hard bound breaks. Every
@@ -198,6 +209,30 @@ struct Trace {
     priced: bool,
 }
 
+/// A route's stops by index: 0 is the start, then the visits, then the end.
+#[derive(Clone, Copy)]
+struct Stops<'a> {
+    veh: &'a Vehicle,
+    route: &'a [NodeId],
+}
+
+impl Stops<'_> {
+    #[inline]
+    fn at(self, k: usize) -> NodeId {
+        match k {
+            0 => self.veh.start,
+            k if k <= self.route.len() => self.route[k - 1],
+            _ => self.veh.end,
+        }
+    }
+
+    /// Index of the end stop.
+    #[inline]
+    fn end(self) -> usize {
+        self.route.len() + 1
+    }
+}
+
 impl RouteCache {
     /// The route's true cost, as `eval_route` prices it.
     #[inline]
@@ -205,8 +240,15 @@ impl RouteCache {
         self.cost
     }
 
+    /// The route's arc cost alone, without soft prices.
+    #[inline]
+    pub(crate) fn arcs(&self) -> Cost {
+        self.arcs
+    }
+
     /// Record `route` on `v`; `false` if it is infeasible, and the cache is
-    /// then unusable until the next rebuild.
+    /// then unusable until the next rebuild. Rebuilding in place keeps the
+    /// buffers.
     pub(crate) fn rebuild(&mut self, m: &Model, route: &[NodeId], v: VehicleId) -> bool {
         let veh = m.vehicle(v);
         self.dims.resize_with(m.dimensions().len(), Trace::default);
@@ -215,14 +257,10 @@ impl RouteCache {
         if route.is_empty() {
             return true;
         }
-        if !veh.forbidden.is_empty() && route.iter().any(|&n| veh.forbids(n)) {
+        if forbids_any(veh, route) {
             return false;
         }
-        let mut prev = veh.start;
-        for &node in route.iter().chain(std::iter::once(&veh.end)) {
-            self.arcs += m.eval(veh.cost_class, prev, node);
-            prev = node;
-        }
+        self.arcs = route_arcs(m, veh, route);
         self.cost = self.arcs;
         if m.unserved_vehicle() == Some(v) {
             return true;
@@ -230,12 +268,12 @@ impl RouteCache {
         if m.has_precedence() && !precedence_holds(m, route) {
             return false;
         }
-        let end = route.len() + 1;
+        let stops = Stops { veh, route };
         for (d, t) in m.dimensions().iter().zip(&mut self.dims) {
-            if !t.fill(m, d, route, veh, v) {
+            let Some(price) = t.fill(m, d, stops, v) else {
                 return false;
-            }
-            self.cost += t.price[end] + peak_price(d, v, t.peak[end]);
+            };
+            self.cost += price;
         }
         true
     }
@@ -258,12 +296,8 @@ impl RouteCache {
         if route.is_empty() {
             return eval_route(m, &[u], v);
         }
-        let stop = |k: usize| match k {
-            0 => veh.start,
-            k if k <= route.len() => route[k - 1],
-            _ => veh.end,
-        };
-        let (prev, next) = (stop(pos), stop(pos + 1));
+        let stops = Stops { veh, route };
+        let (prev, next) = (stops.at(pos), stops.at(pos + 1));
         let cc = veh.cost_class;
         let arcs = self.arcs + m.eval(cc, prev, u) + m.eval(cc, u, next) - m.eval(cc, prev, next);
         if m.unserved_vehicle() == Some(v) {
@@ -277,100 +311,91 @@ impl RouteCache {
         }
         let mut cost = arcs;
         for (d, t) in m.dimensions().iter().zip(&self.dims) {
-            cost += t.insert_price(m, d, v, stop, route.len() + 1, pos, u)?;
+            cost += t.insert_price(m, d, v, stops, pos, u)?;
         }
         Some(cost)
     }
 }
 
 impl Trace {
-    fn fill(
-        &mut self,
-        m: &Model,
-        d: &Dimension,
-        route: &[NodeId],
-        veh: &Vehicle,
-        v: VehicleId,
-    ) -> bool {
+    /// Record `walk` over `stops`, and return what it priced the route at.
+    fn fill(&mut self, m: &Model, d: &Dimension, stops: Stops, v: VehicleId) -> Option<Cost> {
         self.arrive.clear();
         self.cumul.clear();
         self.price.clear();
         self.peak.clear();
-        let lim = Limits::of(d, v);
-        let mut cumul = d.lower_bound[veh.start.index()];
-        if cumul > lim.cap {
-            return false;
-        }
-        let (mut price, mut peak) = (0, cumul);
-        self.arrive.push(cumul);
-        self.cumul.push(cumul);
-        self.price.push(price);
-        self.peak.push(peak);
-        let mut prev = veh.start;
-        for &node in route.iter().chain(std::iter::once(&veh.end)) {
-            let arrive = cumul + m.eval(d.transit, prev, node);
-            let Some(next) = settle(d, &lim, node, arrive) else {
-                return false;
-            };
-            cumul = next;
-            price += stop_price(d, &lim, node, arrive, cumul);
-            peak = peak.max(cumul);
-            self.arrive.push(arrive);
-            self.cumul.push(cumul);
-            self.price.push(price);
-            self.peak.push(peak);
-            prev = node;
+        // `walk` reports a stop's prices before the stop itself, and the
+        // peak's after the last stop; both closures need the running sums.
+        let (paid, total) = (Cell::new(0), Cell::new(0));
+        let mut peak = i64::MIN;
+        let feasible = walk(
+            m,
+            d,
+            stops.route,
+            stops.veh,
+            v,
+            |node, _, cost| {
+                total.set(total.get() + cost);
+                if node.is_some() {
+                    paid.set(paid.get() + cost);
+                }
+            },
+            |_, arrive, cumul| {
+                peak = peak.max(cumul);
+                self.arrive.push(arrive);
+                self.cumul.push(cumul);
+                self.price.push(paid.get());
+                self.peak.push(peak);
+            },
+        );
+        if !feasible {
+            return None;
         }
 
-        let stops = self.cumul.len();
+        let lim = Limits::of(d, v);
+        let n = self.cumul.len();
         self.tail_peak.clear();
-        self.tail_peak.resize(stops, i64::MIN);
+        self.tail_peak.resize(n, i64::MIN);
         self.slack.clear();
-        self.slack.resize(stops, i64::MAX);
+        self.slack.resize(n, i64::MAX);
         let (mut tail, mut later) = (i64::MIN, i64::MAX);
-        for k in (1..stops).rev() {
-            let node = if k < stops - 1 { route[k - 1] } else { veh.end };
+        for k in (0..n).rev() {
             tail = tail.max(self.cumul[k]);
             self.tail_peak[k] = tail;
             let wait = self.cumul[k] - self.arrive[k];
             let room = lim.cap.saturating_sub(self.cumul[k]).min(later);
-            later = d.upper_bound[node.index()]
+            later = d.upper_bound[stops.at(k).index()]
                 .saturating_sub(self.arrive[k])
                 .min(wait.saturating_add(room));
             self.slack[k] = later;
         }
-        self.tail_peak[0] = tail.max(self.cumul[0]);
         self.priced = lim.wait_cost > 0
             || d.soft_max_cumul[v.index()] != i64::MAX
-            || route
-                .iter()
-                .chain(std::iter::once(&veh.end))
-                .any(|n| d.soft_upper_bound[n.index()] != i64::MAX);
-        true
+            || (1..n).any(|k| d.soft_upper_bound[stops.at(k).index()] != i64::MAX);
+        Some(total.get())
     }
 
     /// What this dimension prices the route at with `u` inserted after stop
     /// `pos`, `None` if infeasible. The walk stops as soon as the new cumul
     /// meets the cached one: from that stop on, nothing differs.
-    #[allow(clippy::too_many_arguments)]
     fn insert_price(
         &self,
         m: &Model,
         d: &Dimension,
         v: VehicleId,
-        stop: impl Fn(usize) -> NodeId,
-        last: usize,
+        stops: Stops,
         pos: usize,
         u: NodeId,
     ) -> Option<Cost> {
         let lim = Limits::of(d, v);
-        let arrive = self.cumul[pos] + m.eval(d.transit, stop(pos), u);
+        let last = stops.end();
+        let arrive = self.cumul[pos] + m.eval(d.transit, stops.at(pos), u);
         let mut cumul = settle(d, &lim, u, arrive)?;
         let mut price = self.price[pos] + stop_price(d, &lim, u, arrive, cumul);
         let mut peak = self.peak[pos].max(cumul);
         let mut prev = u;
         for k in pos + 1..=last {
-            let node = stop(k);
+            let node = stops.at(k);
             let arrive = cumul + m.eval(d.transit, prev, node);
             if !self.priced && arrive >= self.arrive[k] {
                 return (arrive - self.arrive[k] <= self.slack[k]).then_some(price);

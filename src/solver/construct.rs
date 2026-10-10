@@ -1,4 +1,4 @@
-use super::{Construct, SearchEvent, candidate_vehicles, with_front};
+use super::{Construct, Rng, SearchEvent, candidate_vehicles, with_front};
 use crate::eval::{Routes, eval_route};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
@@ -61,26 +61,6 @@ fn best_over(
         }
     }
     best
-}
-
-/// SplitMix64. Not cryptographic. Seeds reproduce solutions, no dependency.
-pub(super) struct Rng(pub(super) u64);
-
-impl Rng {
-    #[inline]
-    pub(super) fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
-    #[inline]
-    pub(super) fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
 }
 
 /// Always the cheapest insertion on offer.

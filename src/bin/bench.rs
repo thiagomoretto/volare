@@ -7,16 +7,16 @@
 //!   cargo run --release --bin bench -- X-n101        # name filter
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
 //!   cargo run --release --bin bench -- --sisr=20000  # ruin and recreate
-//!
-//! `--sisr` takes its knobs as `--sisr-removed=N`, `--sisr-string=N`,
-//! `--sisr-t0=F` and `--sisr-t1=F`; unset ones keep `SisrParams::new`'s.
-//! `--seed=N` shifts every seed, to tell a better knob from a lucky draw.
 //!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
 //!
 //! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
 //! each draw. Restarts help the hill climb but not GLS: a restart wipes the
 //! penalties that aim the next descent, so rounds beat seeds at equal budget.
 //! One start stays the plain greedy, so baseline.csv keeps its meaning.
+//!
+//! `--sisr` takes its knobs as `--sisr-removed=N`, `--sisr-string=N`,
+//! `--sisr-t0=F` and `--sisr-t1=F`; unset ones keep `SisrParams::new`'s.
+//! `--seed=N` shifts every seed, to tell a better knob from a lucky draw.
 //!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!   cargo run --release --bin bench -- --scenario=precede # ordering within a route

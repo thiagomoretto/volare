@@ -421,7 +421,7 @@ fn ruin_recreate_is_seeded_feasible_and_monotone() {
 /// 0 carries no price, so its routes take the slack shortcut; vehicle 1 pays
 /// for waiting and for a soft peak, so its routes walk.
 fn every_constraint_model(seed: u64) -> Model {
-    let mut rng = super::construct::Rng(seed);
+    let mut rng = Rng(seed);
     let n = 9;
     let x: Vec<i64> = (0..n).map(|_| rng.below(40) as i64).collect();
     let dist = move |a: NodeId, b: NodeId| (x[a.index()] - x[b.index()]).abs();
@@ -474,7 +474,7 @@ fn route_cache_prices_insertions_like_eval_route() {
     let (mut checked, mut feasible) = (0, 0);
     for seed in 0..40 {
         let m = every_constraint_model(seed);
-        let mut rng = super::construct::Rng(seed ^ 0xABCD);
+        let mut rng = Rng(seed ^ 0xABCD);
         let customers: Vec<NodeId> = (1..m.node_count() as u32).map(NodeId).collect();
         let mut cache = RouteCache::default();
 
