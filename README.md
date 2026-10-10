@@ -112,19 +112,19 @@ bound expresses the other.
 ## Benchmarks
 
 Mean gap against the best known cost across the 43 CVRPLIB X instances with n up
-to 300, measured at commit `b0995dc` (ruin and recreate at the commit that added it):
+to 300, measured at commit `b0995dc` (ruin and recreate at the commit that last changed it):
 
 | Strategy | Mean gap |
 | --- | --- |
 | cheapest insertion | 25.2% |
 | hill climb | 9.5% |
 | guided local search, 300 rounds | 5.5% |
-| ruin and recreate, 50,000 rounds | 1.2% |
+| ruin and recreate, 100,000 rounds | 1.0% |
 
 ```sh
-cargo run --release --bin bench -- X-n              # hill climb, about 2 seconds
-cargo run --release --bin bench -- X-n --gls=300    # about 3 minutes
-cargo run --release --bin bench -- X-n --sisr=50000 # about 80 seconds
+cargo run --release --bin bench -- X-n               # hill climb, about 2 seconds
+cargo run --release --bin bench -- X-n --gls=300     # about 3 minutes
+cargo run --release --bin bench -- X-n --sisr=100000 # about 80 seconds
 ```
 
 Drop the `X-n` filter and the run also takes in the five Belgium XL instances,
