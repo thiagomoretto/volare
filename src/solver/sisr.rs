@@ -73,7 +73,7 @@ pub fn ruin_recreate(m: &Model, sol: &mut Routes, p: SisrParams) {
     ruin_recreate_with(m, sol, p, |_| ControlFlow::Continue(()))
 }
 
-/// `ruin_recreate` reporting a `SisrBest` per new best cost, a `SisrRound` per
+/// `ruin_recreate` reporting a `Best` per new best cost, a `Round` per
 /// round, and a final `Done`. Stopped early by the callback, it still returns
 /// the best solution so far.
 pub fn ruin_recreate_with(
@@ -91,7 +91,7 @@ pub fn ruin_recreate_with(
     let mut cur_cost: Cost = cost.iter().sum();
     let mut best = sol.clone();
     let mut best_cost = cur_cost;
-    let mut stopped = log(SearchEvent::SisrBest {
+    let mut stopped = log(SearchEvent::Best {
         iter: 0,
         cost: best_cost,
     })
@@ -125,14 +125,14 @@ pub fn ruin_recreate_with(
         if accepted && cur_cost < best_cost {
             best_cost = cur_cost;
             best.clone_from(sol);
-            stopped = log(SearchEvent::SisrBest {
+            stopped = log(SearchEvent::Best {
                 iter,
                 cost: best_cost,
             })
             .is_break();
         }
         stopped = stopped
-            || log(SearchEvent::SisrRound {
+            || log(SearchEvent::Round {
                 iter,
                 cost: cur_cost,
             })

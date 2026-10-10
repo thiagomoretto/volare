@@ -45,39 +45,39 @@ impl std::fmt::Display for Operator {
 /// observe them; `search_log` builds one that prints progress lines. Costs are
 /// whole-solution totals.
 ///
-/// The callback handed to `solve_with`, `local_search_with` or
-/// `guided_local_search_with` is also a search monitor: return
+/// The callback handed to `solve_with`, `local_search_with`,
+/// `guided_local_search_with` or `ruin_recreate_with` is also a search
+/// monitor: return
 /// `ControlFlow::Break(())` and the search stops at once, keeps the best
 /// solution found, and reports `Done`. Construction cannot stop before every
 /// node is placed, so `first_solution_with` takes a plain observer; a `Break`
 /// on `FirstSolution` makes `solve_with` skip the improvement phase.
+///
+/// Every search that runs in rounds reports the same `Best` and `Round`, so
+/// one monitor serves all of them. Match with a `_` arm: new variants can
+/// arrive without breaking your code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SearchEvent {
     /// Construction placed every node; the first complete solution exists.
     FirstSolution { cost: Cost },
     /// `operator` accepted a move and the total cost dropped to `cost`.
     Improvement { operator: Operator, cost: Cost },
-    /// Guided local search finished round `iter` holding a solution cheaper
-    /// than anything before it. `cost` is the true cost, never the penalized
-    /// one the descent was reading.
-    GuidedBest { iter: usize, cost: Cost },
-    /// Guided local search finished round `iter`; `cost` is the true cost of
-    /// the round's own solution. Fires every round, improving or not, so a
-    /// monitor can stop a search that has stalled.
-    GuidedRound { iter: usize, cost: Cost },
-    /// Ruin and recreate finished round `iter` holding a solution cheaper
-    /// than anything before it.
-    SisrBest { iter: usize, cost: Cost },
-    /// Ruin and recreate finished round `iter`; `cost` is the solution the
-    /// search now holds, which annealing may have let get worse.
-    SisrRound { iter: usize, cost: Cost },
+    /// Round `iter` found a solution cheaper than anything before it; round
+    /// 0 is the starting solution. `cost` is the true cost, never a penalized
+    /// one a search may steer by.
+    Best { iter: usize, cost: Cost },
+    /// Round `iter` finished; `cost` is the true cost of the solution the
+    /// search now holds, which may be worse than the best. Fires every round,
+    /// improving or not, so a monitor can stop a search that has stalled.
+    Round { iter: usize, cost: Cost },
     /// The search converged or the callback stopped it; the solution is final.
     Done { cost: Cost },
 }
 
 /// An event callback that prints progress lines to stderr, prefixed with
-/// elapsed time since the closure was created. It skips `GuidedRound` and
-/// `SisrRound`, which fire too often to read, and never stops the search:
+/// elapsed time since the closure was created. It skips `Round`, which fires
+/// too often to read, and never stops the search:
 ///
 /// ```text
 /// #search    0.012s  relocate improved, cost 5900
@@ -104,13 +104,10 @@ pub fn search_log() -> impl FnMut(SearchEvent) -> ControlFlow<()> {
             SearchEvent::Improvement { operator, cost } => {
                 eprintln!("#search {t:7.3}s  {operator} improved, cost {cost}")
             }
-            SearchEvent::GuidedBest { iter, cost } => {
-                eprintln!("#search {t:7.3}s  gls round {iter}, new best cost {cost}")
+            SearchEvent::Best { iter, cost } => {
+                eprintln!("#search {t:7.3}s  round {iter}, new best cost {cost}")
             }
-            SearchEvent::SisrBest { iter, cost } => {
-                eprintln!("#search {t:7.3}s  sisr round {iter}, new best cost {cost}")
-            }
-            SearchEvent::GuidedRound { .. } | SearchEvent::SisrRound { .. } => {}
+            SearchEvent::Round { .. } => {}
             SearchEvent::Done { cost } => eprintln!("#search {t:7.3}s  done, cost {cost}"),
         }
         ControlFlow::Continue(())

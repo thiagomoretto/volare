@@ -296,19 +296,20 @@ fn search_events_trace_the_solve() {
 }
 
 /// `Break` ends the search on the spot, and the answer is still the best one
-/// seen, not whatever the stopped round held.
+/// seen, not whatever the stopped round held. One monitor, every search that
+/// runs in rounds.
 #[test]
-fn monitor_stops_guided_search() {
+fn monitor_stops_any_round_search() {
     let m = line_model();
-    let (mut rounds, mut best, mut done) = (0, i64::MAX, None);
-    let sol = solve_with(
-        &m,
-        Construct::CheapestInsertion,
+    for improve in [
         Improve::Gls { iters: 1000 },
-        |e| {
+        Improve::Sisr(SisrParams::new(1000)),
+    ] {
+        let (mut rounds, mut best, mut done) = (0, i64::MAX, None);
+        let sol = solve_with(&m, Construct::CheapestInsertion, improve, |e| {
             match e {
-                SearchEvent::GuidedBest { cost, .. } => best = cost,
-                SearchEvent::GuidedRound { .. } => rounds += 1,
+                SearchEvent::Best { cost, .. } => best = cost,
+                SearchEvent::Round { .. } => rounds += 1,
                 SearchEvent::Done { cost } => done = Some(cost),
                 _ => {}
             }
@@ -317,11 +318,11 @@ fn monitor_stops_guided_search() {
             } else {
                 ControlFlow::Continue(())
             }
-        },
-    );
-    assert_eq!(rounds, 5);
-    assert_eq!(done, Some(best));
-    assert_eq!(sol.cost, best);
+        });
+        assert_eq!(rounds, 5, "{improve:?}");
+        assert_eq!(done, Some(best), "{improve:?}");
+        assert_eq!(sol.cost, best, "{improve:?}");
+    }
 }
 
 #[test]
