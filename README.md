@@ -124,7 +124,7 @@ to 300, measured at commit `b0995dc` (ruin and recreate at the commit that added
 ```sh
 cargo run --release --bin bench -- X-n              # hill climb, about 2 seconds
 cargo run --release --bin bench -- X-n --gls=300    # about 3 minutes
-cargo run --release --bin bench -- X-n --sisr=50000 # about 3 minutes
+cargo run --release --bin bench -- X-n --sisr=50000 # about 80 seconds
 ```
 
 Drop the `X-n` filter and the run also takes in the five Belgium XL instances,

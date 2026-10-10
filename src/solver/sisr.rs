@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use super::construct::Rng;
 use super::{SearchEvent, candidate_vehicles};
-use crate::eval::{Routes, eval_route, eval_route_split};
+use crate::eval::{RouteCache, Routes, eval_route_split};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
@@ -29,13 +29,10 @@ const COOLING: f64 = 100.0;
 /// with a small chance to skip each position, and accepts the result under
 /// simulated annealing. The best true-cost solution seen is what comes back.
 ///
-/// Constraints stay a black box: every insertion is priced by `eval_route`,
-/// and a dropped node is an insertion into the unserved sink. A round that
-/// cannot place every customer is thrown away.
-///
-/// ponytail: each insertion position costs a full `eval_route` pass, so a
-/// round is quadratic in route length. Cached cumul prefixes per route turn
-/// that check into a constant-time slack test.
+/// Constraints stay a black box: every insertion is priced as `eval_route`
+/// would price it, through a per-route cache of the forward pass, and a
+/// dropped node is an insertion into the unserved sink. A round that leaves a
+/// cut route infeasible, or cannot place every customer, is thrown away.
 pub fn ruin_recreate(m: &Model, sol: &mut Routes, iters: usize, seed: u64) {
     ruin_recreate_with(m, sol, iters, seed, |_| ControlFlow::Continue(()))
 }
@@ -60,7 +57,12 @@ pub fn ruin_recreate_with(
     let depot = m.vehicle(VehicleId(0)).start;
     let cost_class = m.vehicle(VehicleId(0)).cost_class;
 
-    let mut cost: Vec<Cost> = route_costs(m, sol);
+    // `caches` follows `work`; `cost` holds each route's cost in `sol`.
+    let mut caches: Vec<RouteCache> = (0..sol.len()).map(|_| RouteCache::default()).collect();
+    for (v, (c, route)) in caches.iter_mut().zip(sol.iter()).enumerate() {
+        assert!(c.rebuild(m, route, VehicleId(v as u32)), "infeasible start");
+    }
+    let mut cost: Vec<Cost> = caches.iter().map(RouteCache::cost).collect();
     let mut cur_cost: Cost = cost.iter().sum();
     let mut best = sol.clone();
     let mut best_cost = cur_cost;
@@ -84,20 +86,18 @@ pub fn ruin_recreate_with(
     })
     .is_break();
 
+    // A round edits `work`, then either copies the routes it touched into
+    // `sol` or restores them from it; the untouched ones never move.
     let mut work = sol.clone();
-    let mut work_cost = cost.clone();
     let mut at: Vec<(usize, usize)> = vec![(usize::MAX, 0); m.node_count()];
     let mut ruined: Vec<usize> = Vec::new();
     let mut removed: Vec<NodeId> = Vec::new();
-    let mut ctx = Recreate::default();
+    let mut ctx = Recreate::new(sol.len());
 
     for iter in 1..=iters {
         if stopped {
             break;
         }
-        work.clone_from(sol);
-        work_cost.clone_from(&cost);
-
         locate(&work, &mut at);
         ruin(
             &mut rng,
@@ -110,35 +110,59 @@ pub fn ruin_recreate_with(
             &mut removed,
         );
         for &v in &ruined {
-            work_cost[v] = eval_route(m, &work[v], VehicleId(v as u32)).expect("a cut route");
+            ctx.touch(v);
         }
+        // Removing a stop can break a route: an earlier arrival can wait
+        // past a cap, and a transit need not obey the triangle inequality.
+        let cut_ok = ruined
+            .iter()
+            .all(|&v| caches[v].rebuild(m, &work[v], VehicleId(v as u32)));
         order(m, &mut rng, &mut removed, depot, cost_class);
 
-        if recreate(
-            m,
-            &mut rng,
-            &mut work,
-            &mut work_cost,
-            &removed,
-            sink,
-            &mut ctx,
-        ) {
-            let new_cost: Cost = work_cost.iter().sum();
+        let mut accepted = false;
+        if cut_ok
+            && recreate(
+                m,
+                &mut rng,
+                &mut work,
+                &mut caches,
+                &removed,
+                sink,
+                &mut ctx,
+            )
+        {
+            let new_cost = cur_cost
+                + ctx
+                    .touched
+                    .iter()
+                    .map(|&v| caches[v].cost() - cost[v])
+                    .sum::<Cost>();
             let t = t0 * COOLING.powf(-(iter as f64) / iters as f64);
             if (new_cost as f64) < cur_cost as f64 + t * exp1(&mut rng) {
-                std::mem::swap(sol, &mut work);
-                std::mem::swap(&mut cost, &mut work_cost);
+                accepted = true;
                 cur_cost = new_cost;
-                if cur_cost < best_cost {
-                    best_cost = cur_cost;
-                    best.clone_from(sol);
-                    stopped = log(SearchEvent::SisrBest {
-                        iter,
-                        cost: best_cost,
-                    })
-                    .is_break();
-                }
             }
+        }
+        for &v in &ctx.touched {
+            if accepted {
+                sol[v].clone_from(&work[v]);
+                cost[v] = caches[v].cost();
+            } else {
+                work[v].clone_from(&sol[v]);
+                caches[v].rebuild(m, &work[v], VehicleId(v as u32));
+            }
+            ctx.marked[v] = false;
+        }
+        ctx.touched.clear();
+
+        if accepted && cur_cost < best_cost {
+            best_cost = cur_cost;
+            best.clone_from(sol);
+            stopped = log(SearchEvent::SisrBest {
+                iter,
+                cost: best_cost,
+            })
+            .is_break();
         }
         stopped = stopped
             || log(SearchEvent::SisrRound {
@@ -150,13 +174,6 @@ pub fn ruin_recreate_with(
 
     *sol = best;
     let _ = log(SearchEvent::Done { cost: best_cost });
-}
-
-fn route_costs(m: &Model, sol: &Routes) -> Vec<Cost> {
-    sol.iter()
-        .enumerate()
-        .map(|(v, r)| eval_route(m, r, VehicleId(v as u32)).expect("infeasible start"))
-        .collect()
 }
 
 /// Each customer's nearest customers, itself first, by the first vehicle's
@@ -298,11 +315,28 @@ fn order(m: &Model, rng: &mut Rng, removed: &mut [NodeId], depot: NodeId, cost_c
     }
 }
 
-/// Buffers `recreate` reuses across rounds.
-#[derive(Default)]
+/// Buffers `recreate` reuses across rounds, and the routes a round touched.
 struct Recreate {
     vehicles: Vec<usize>,
-    candidate: Vec<NodeId>,
+    touched: Vec<usize>,
+    marked: Vec<bool>,
+}
+
+impl Recreate {
+    fn new(vehicles: usize) -> Self {
+        Recreate {
+            vehicles: Vec::new(),
+            touched: Vec::new(),
+            marked: vec![false; vehicles],
+        }
+    }
+
+    fn touch(&mut self, v: usize) {
+        if !self.marked[v] {
+            self.marked[v] = true;
+            self.touched.push(v);
+        }
+    }
 }
 
 /// Put every node of `removed` back at its cheapest unskipped feasible
@@ -311,7 +345,7 @@ fn recreate(
     m: &Model,
     rng: &mut Rng,
     sol: &mut Routes,
-    cost: &mut [Cost],
+    caches: &mut [RouteCache],
     removed: &[NodeId],
     sink: Option<usize>,
     ctx: &mut Recreate,
@@ -319,63 +353,51 @@ fn recreate(
     let nv = sol.len();
     for &u in removed {
         candidate_vehicles(m, sol, &mut ctx.vehicles);
-        let mut best = best_insertion(
-            m,
-            rng,
-            sol,
-            cost,
-            &ctx.vehicles,
-            u,
-            sink,
-            &mut ctx.candidate,
-        );
+        let mut best = best_insertion(m, rng, sol, caches, &ctx.vehicles, u, sink);
         // Per-vehicle forbids make empty vehicles differ, so the one empty
         // candidate is not enough when it refuses `u`.
         if best.is_none() && ctx.vehicles.len() < nv {
             let rest: Vec<usize> = (0..nv).filter(|v| !ctx.vehicles.contains(v)).collect();
-            best = best_insertion(m, rng, sol, cost, &rest, u, sink, &mut ctx.candidate);
+            best = best_insertion(m, rng, sol, caches, &rest, u, sink);
         }
-        let Some((delta, v, pos)) = best else {
+        let Some((_, v, pos)) = best else {
             return false;
         };
         sol[v].insert(pos, u);
-        cost[v] += delta;
+        ctx.touch(v);
+        let fits = caches[v].rebuild(m, &sol[v], VehicleId(v as u32));
+        debug_assert!(fits, "insert_cost priced an infeasible insertion");
+        if !fits {
+            return false;
+        }
     }
     true
 }
 
 /// Cheapest `(delta, vehicle, position)` for `u` over `vs`. The sink's order
 /// is meaningless, so it is priced at one position only, and never skipped.
-#[allow(clippy::too_many_arguments)]
 fn best_insertion(
     m: &Model,
     rng: &mut Rng,
     sol: &Routes,
-    cost: &[Cost],
+    caches: &[RouteCache],
     vs: &[usize],
     u: NodeId,
     sink: Option<usize>,
-    candidate: &mut Vec<NodeId>,
 ) -> Option<(Cost, usize, usize)> {
     let mut best: Option<(Cost, usize, usize)> = None;
     for &v in vs {
         let route = &sol[v];
+        let cache = &caches[v];
         let first = if Some(v) == sink { route.len() } else { 0 };
-        candidate.clear();
-        candidate.extend_from_slice(&route[..first]);
-        candidate.push(u);
-        candidate.extend_from_slice(&route[first..]);
         for pos in first..=route.len() {
-            if pos > first {
-                candidate.swap(pos - 1, pos);
-            }
             if Some(v) != sink && rng.below(BLINK) == 0 {
                 continue;
             }
-            let Some(c) = eval_route(m, candidate, VehicleId(v as u32)) else {
+            let Some(c) = cache.insert_cost(m, route, VehicleId(v as u32), pos, u) else {
                 continue;
             };
-            let delta = c - cost[v];
+            let delta = c - cache.cost();
             if best.is_none_or(|(bd, ..)| delta < bd) {
                 best = Some((delta, v, pos));
             }
