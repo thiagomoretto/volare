@@ -6,10 +6,6 @@ use crate::eval::{RouteCache, Routes, eval_route_split};
 use crate::model::Model;
 use crate::types::{Cost, NodeId, VehicleId};
 
-/// Customers one ruin removes, on average.
-const AVG_REMOVED: usize = 10;
-/// Longest string one ruin cuts out of a route.
-const MAX_STRING: usize = 10;
 /// One in this many split strings stops growing its kept run at each step.
 const SPLIT_STOP: usize = 100;
 /// One in this many insertion positions is skipped without being priced.
@@ -17,11 +13,52 @@ const BLINK: usize = 100;
 /// Neighbors kept per customer. A ruin walks out from its seed until it has
 /// cut enough routes, which happens long before this list runs out.
 const NEIGHBORS: usize = 100;
-/// The start temperature divides the mean arc cost by this, and the final
-/// temperature divides the start by `COOLING`, so the schedule follows the
-/// model's cost scale instead of fixed units.
-const HEAT: f64 = 2.0;
-const COOLING: f64 = 100.0;
+
+/// How ruin and recreate searches. Start from `SisrParams::new` and set the
+/// fields you want to change: new fields can then arrive without breaking
+/// your code.
+///
+/// ```
+/// # use volare::SisrParams;
+/// let mut p = SisrParams::new(50_000);
+/// p.avg_removed = 15;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct SisrParams {
+    /// Rounds to run.
+    pub iters: usize,
+    /// Same seed, same solution.
+    pub seed: u64,
+    /// Customers one ruin removes, on average. More reaches further from the
+    /// current solution per round, and makes each round cost more.
+    pub avg_removed: usize,
+    /// Longest string one ruin cuts out of a route.
+    pub max_string: usize,
+    /// Temperature at the first round, as a fraction of the mean arc cost of
+    /// the starting solution. A round that is worse by `d` is accepted with
+    /// chance `exp(-d / temperature)`, so this sets how far uphill the search
+    /// is willing to walk. Zero accepts only strict improvements.
+    pub start_temperature: f64,
+    /// Temperature at the last round, on the same scale. The schedule falls
+    /// geometrically from the start to here.
+    pub end_temperature: f64,
+}
+
+impl SisrParams {
+    /// Defaults from the paper, with the temperature rescaled to the model's
+    /// own arc costs.
+    pub fn new(iters: usize) -> Self {
+        SisrParams {
+            iters,
+            seed: 0,
+            avg_removed: 10,
+            max_string: 10,
+            start_temperature: 0.5,
+            end_temperature: 0.005,
+        }
+    }
+}
 
 /// Ruin and recreate with slack induction by string removals (Christiaens and
 /// Vanden Berghe). Each round cuts a few short strings out of routes that lie
@@ -33,8 +70,8 @@ const COOLING: f64 = 100.0;
 /// would price it, through a per-route cache of the forward pass, and a
 /// dropped node is an insertion into the unserved sink. A round that leaves a
 /// cut route infeasible, or cannot place every customer, is thrown away.
-pub fn ruin_recreate(m: &Model, sol: &mut Routes, iters: usize, seed: u64) {
-    ruin_recreate_with(m, sol, iters, seed, |_| ControlFlow::Continue(()))
+pub fn ruin_recreate(m: &Model, sol: &mut Routes, p: SisrParams) {
+    ruin_recreate_with(m, sol, p, |_| ControlFlow::Continue(()))
 }
 
 /// `ruin_recreate` reporting a `SisrBest` per new best cost, a `SisrRound` per
@@ -43,12 +80,21 @@ pub fn ruin_recreate(m: &Model, sol: &mut Routes, iters: usize, seed: u64) {
 pub fn ruin_recreate_with(
     m: &Model,
     sol: &mut Routes,
-    iters: usize,
-    seed: u64,
+    p: SisrParams,
     mut log: impl FnMut(SearchEvent) -> ControlFlow<()>,
 ) {
+    assert!(p.avg_removed >= 1, "avg_removed must be at least 1");
+    assert!(p.max_string >= 1, "max_string must be at least 1");
+    assert!(
+        p.end_temperature >= 0.0 && p.end_temperature <= p.start_temperature,
+        "temperatures must satisfy 0 <= end <= start"
+    );
+    assert!(
+        p.start_temperature.is_finite(),
+        "start_temperature must be finite"
+    );
     let sink = m.unserved_vehicle().map(|v| v.index());
-    let mut rng = Rng(seed);
+    let mut rng = Rng(p.seed);
     let customers: Vec<NodeId> = (0..m.node_count() as u32)
         .map(NodeId)
         .filter(|&n| !m.is_terminal(n))
@@ -78,7 +124,14 @@ pub fn ruin_recreate_with(
                 .0;
         }
     }
-    let t0 = (arc_cost as f64 / served.max(1) as f64 / HEAT).max(1.0);
+    let mean_arc = arc_cost as f64 / served.max(1) as f64;
+    let temperature = |iter: usize| {
+        if p.start_temperature == 0.0 {
+            return 0.0;
+        }
+        let fall = p.end_temperature / p.start_temperature;
+        mean_arc * p.start_temperature * fall.powf(iter as f64 / p.iters as f64)
+    };
 
     let mut stopped = log(SearchEvent::SisrBest {
         iter: 0,
@@ -94,7 +147,7 @@ pub fn ruin_recreate_with(
     let mut removed: Vec<NodeId> = Vec::new();
     let mut ctx = Recreate::new(sol.len());
 
-    for iter in 1..=iters {
+    for iter in 1..=p.iters {
         if stopped {
             break;
         }
@@ -106,6 +159,7 @@ pub fn ruin_recreate_with(
             sink,
             &mut work,
             &at,
+            p,
             &mut ruined,
             &mut removed,
         );
@@ -137,8 +191,7 @@ pub fn ruin_recreate_with(
                     .iter()
                     .map(|&v| caches[v].cost() - cost[v])
                     .sum::<Cost>();
-            let t = t0 * COOLING.powf(-(iter as f64) / iters as f64);
-            if (new_cost as f64) < cur_cost as f64 + t * exp1(&mut rng) {
+            if (new_cost as f64) < cur_cost as f64 + temperature(iter) * exp1(&mut rng) {
                 accepted = true;
                 cur_cost = new_cost;
             }
@@ -224,6 +277,7 @@ fn ruin(
     sink: Option<usize>,
     sol: &mut Routes,
     at: &[(usize, usize)],
+    p: SisrParams,
     ruined: &mut Vec<usize>,
     removed: &mut Vec<NodeId>,
 ) {
@@ -237,8 +291,8 @@ fn ruin(
             visits += route.len();
         }
     }
-    let max_len = (visits / used.max(1)).clamp(1, MAX_STRING);
-    let strings = 1 + rng.below((4 * AVG_REMOVED / (1 + max_len)).max(1));
+    let max_len = (visits / used.max(1)).clamp(1, p.max_string);
+    let strings = 1 + rng.below((4 * p.avg_removed / (1 + max_len)).max(1));
 
     let seed = customers[rng.below(customers.len())];
     for &c in &adj[seed.index()] {

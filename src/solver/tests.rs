@@ -398,7 +398,9 @@ fn ruin_recreate_is_seeded_feasible_and_monotone() {
     let start_cost = eval_routes(&m, &start).unwrap();
     let run = |seed| {
         let mut sol = start.clone();
-        ruin_recreate(&m, &mut sol, 500, seed);
+        let mut p = SisrParams::new(500);
+        p.seed = seed;
+        ruin_recreate(&m, &mut sol, p);
         sol
     };
 

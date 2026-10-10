@@ -16,7 +16,7 @@ mod tests;
 pub use construct::{cheapest_insertion, first_solution_with, greedy_randomized};
 pub use descent::{local_search, local_search_with};
 pub use gls::{guided_local_search, guided_local_search_with};
-pub use sisr::{ruin_recreate, ruin_recreate_with};
+pub use sisr::{SisrParams, ruin_recreate, ruin_recreate_with};
 
 /// The neighborhood operator that accepted an improving move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +129,7 @@ pub enum Construct {
 }
 
 /// How that solution is then made cheaper.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Improve {
     /// Descend to the first local optimum and stop.
     HillClimb,
@@ -137,9 +137,8 @@ pub enum Improve {
     /// coming back, for `iters` rounds.
     Gls { iters: usize },
     /// Ruin and recreate: cut strings of nearby customers out, reinsert them,
-    /// accept under simulated annealing, for `iters` rounds. Same seed, same
-    /// solution.
-    Sisr { iters: usize, seed: u64 },
+    /// accept under simulated annealing. See `SisrParams`.
+    Sisr(SisrParams),
 }
 
 /// `cost` is the true cost — never the penalized number a GLS descent was
@@ -181,7 +180,7 @@ pub fn solve_with(
         match improve {
             Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
             Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
-            Improve::Sisr { iters, seed } => ruin_recreate_with(m, &mut sol, iters, seed, &mut log),
+            Improve::Sisr(p) => ruin_recreate_with(m, &mut sol, p, &mut log),
         }
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");

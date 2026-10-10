@@ -7,6 +7,10 @@
 //!   cargo run --release --bin bench -- X-n101        # name filter
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
 //!   cargo run --release --bin bench -- --sisr=20000  # ruin and recreate
+//!
+//! `--sisr` takes its knobs as `--sisr-removed=N`, `--sisr-string=N`,
+//! `--sisr-t0=F` and `--sisr-t1=F`; unset ones keep `SisrParams::new`'s.
+//! `--seed=N` shifts every seed, to tell a better knob from a lucky draw.
 //!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
 //!
 //! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
@@ -35,7 +39,7 @@ use volare::cvrplib::{Instance, cvrp_model, cvrp_model_with, parse_sol};
 use volare::eval::{eval_route, eval_routes, violations, visits_all_nodes};
 use volare::model::{Model, ModelBuilder};
 use volare::solver::{
-    Improve, SearchEvent, Solution, first_solution_with, guided_local_search_with,
+    Improve, SearchEvent, SisrParams, Solution, first_solution_with, guided_local_search_with,
     local_search_with, ruin_recreate_with, search_log, solve_with,
 };
 use volare::types::{NodeId, VehicleId};
@@ -62,9 +66,28 @@ fn main() {
         gls.is_none() || sisr.is_none(),
         "pick one of --gls and --sisr"
     );
+    let flag = |name: &str| args.iter().find_map(|a| a.strip_prefix(name));
     let improve = match (gls, sisr) {
         (Some(iters), _) => Improve::Gls { iters },
-        (_, Some(iters)) => Improve::Sisr { iters, seed: 0 },
+        (_, Some(iters)) => {
+            let mut p = SisrParams::new(iters);
+            if let Some(v) = flag("--sisr-removed=") {
+                p.avg_removed = v.parse().expect("--sisr-removed");
+            }
+            if let Some(v) = flag("--sisr-string=") {
+                p.max_string = v.parse().expect("--sisr-string");
+            }
+            if let Some(v) = flag("--sisr-t0=") {
+                p.start_temperature = v.parse().expect("--sisr-t0");
+            }
+            if let Some(v) = flag("--sisr-t1=") {
+                p.end_temperature = v.parse().expect("--sisr-t1");
+            }
+            if let Some(v) = flag("--seed=") {
+                p.seed = v.parse().expect("--seed");
+            }
+            Improve::Sisr(p)
+        }
         _ => Improve::HillClimb,
     };
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
@@ -168,8 +191,9 @@ fn bench_reference(
                     Improve::Gls { iters } => {
                         guided_local_search_with(&model, &mut sol, iters, &mut log)
                     }
-                    Improve::Sisr { iters, .. } => {
-                        ruin_recreate_with(&model, &mut sol, iters, start as u64, &mut log)
+                    Improve::Sisr(mut p) => {
+                        p.seed += start as u64;
+                        ruin_recreate_with(&model, &mut sol, p, &mut log)
                     }
                 }
                 let cost =
