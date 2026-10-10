@@ -13,6 +13,10 @@ const BLINK: usize = 100;
 /// Neighbors kept per customer. A ruin walks out from its seed until it has
 /// cut enough routes, which happens long before this list runs out.
 const NEIGHBORS: usize = 100;
+/// Recreate first prices a customer only in the routes holding one of this
+/// many of its nearest neighbors, plus an empty vehicle and the sink. The
+/// rest of the fleet is priced only when none of those fits.
+const NEAR: usize = 40;
 
 /// How ruin and recreate searches. Start from `SisrParams::new` and set the
 /// fields you want to change: new fields can then arrive without breaking
@@ -63,8 +67,9 @@ impl SisrParams {
 /// Ruin and recreate with slack induction by string removals (Christiaens and
 /// Vanden Berghe). Each round cuts a few short strings out of routes that lie
 /// near one random customer, puts the customers back by cheapest insertion
-/// with a small chance to skip each position, and accepts the result under
-/// simulated annealing. The best true-cost solution seen is what comes back.
+/// into routes near each one, with a small chance to skip each position, and
+/// accepts the result under simulated annealing. The best true-cost solution
+/// seen is what comes back.
 ///
 /// Constraints stay a black box: every insertion is priced as `eval_route`
 /// would price it, through a per-route cache of the forward pass, and a
@@ -182,6 +187,8 @@ pub fn ruin_recreate_with(
                 &mut caches,
                 &removed,
                 sink,
+                &adj,
+                &mut at,
                 &mut ctx,
             )
         {
@@ -372,6 +379,9 @@ fn order(m: &Model, rng: &mut Rng, removed: &mut [NodeId], depot: NodeId, cost_c
 /// Buffers `recreate` reuses across rounds, and the routes a round touched.
 struct Recreate {
     vehicles: Vec<usize>,
+    near: Vec<usize>,
+    /// Routes holding a neighbor of the customer being placed.
+    close: Vec<bool>,
     touched: Vec<usize>,
     marked: Vec<bool>,
 }
@@ -380,6 +390,8 @@ impl Recreate {
     fn new(vehicles: usize) -> Self {
         Recreate {
             vehicles: Vec::new(),
+            near: Vec::new(),
+            close: vec![false; vehicles],
             touched: Vec::new(),
             marked: vec![false; vehicles],
         }
@@ -394,7 +406,9 @@ impl Recreate {
 }
 
 /// Put every node of `removed` back at its cheapest unskipped feasible
-/// position, `false` as soon as one fits nowhere.
+/// position among the routes near it, `false` as soon as one fits nowhere.
+/// `at` must place every routed node; it follows each insertion.
+#[allow(clippy::too_many_arguments)]
 fn recreate(
     m: &Model,
     rng: &mut Rng,
@@ -402,22 +416,46 @@ fn recreate(
     caches: &mut [RouteCache],
     removed: &[NodeId],
     sink: Option<usize>,
+    adj: &[Vec<NodeId>],
+    at: &mut [(usize, usize)],
     ctx: &mut Recreate,
 ) -> bool {
     let nv = sol.len();
     for &u in removed {
         candidate_vehicles(m, sol, &mut ctx.vehicles);
-        let mut best = best_insertion(m, rng, sol, caches, &ctx.vehicles, u, sink);
+        // A neighbor still out of the solution points at the route it was cut
+        // from, which only widens the set.
+        for &c in adj[u.index()].iter().skip(1).take(NEAR) {
+            ctx.close[at[c.index()].0] = true;
+        }
+        ctx.near.clear();
+        ctx.vehicles.retain(|&v| {
+            let near = ctx.close[v] || sol[v].is_empty() || Some(v) == sink;
+            if near {
+                ctx.near.push(v);
+            }
+            !near
+        });
+        for &c in adj[u.index()].iter().skip(1).take(NEAR) {
+            ctx.close[at[c.index()].0] = false;
+        }
+        let mut best = best_insertion(m, rng, sol, caches, &ctx.near, u, sink);
+        if best.is_none() {
+            best = best_insertion(m, rng, sol, caches, &ctx.vehicles, u, sink);
+        }
         // Per-vehicle forbids make empty vehicles differ, so the one empty
         // candidate is not enough when it refuses `u`.
-        if best.is_none() && ctx.vehicles.len() < nv {
-            let rest: Vec<usize> = (0..nv).filter(|v| !ctx.vehicles.contains(v)).collect();
+        if best.is_none() && ctx.near.len() + ctx.vehicles.len() < nv {
+            let rest: Vec<usize> = (0..nv)
+                .filter(|v| !ctx.near.contains(v) && !ctx.vehicles.contains(v))
+                .collect();
             best = best_insertion(m, rng, sol, caches, &rest, u, sink);
         }
         let Some((_, v, pos)) = best else {
             return false;
         };
         sol[v].insert(pos, u);
+        at[u.index()].0 = v;
         ctx.touch(v);
         let fits = caches[v].rebuild(m, &sol[v], VehicleId(v as u32));
         debug_assert!(fits, "insert_cost priced an infeasible insertion");
