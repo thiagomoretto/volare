@@ -122,8 +122,8 @@ pub fn guided_local_search(m: &Model, sol: &mut Routes, iters: usize) {
     guided_local_search_with(m, sol, iters, |_| ControlFlow::Continue(()))
 }
 
-/// `guided_local_search` reporting a `GuidedBest` per new best true cost, a
-/// `GuidedRound` per round, and a final `Done`. Stopped early by the callback,
+/// `guided_local_search` reporting a `Best` per new best true cost, a
+/// `Round` per round, and a final `Done`. Stopped early by the callback,
 /// it still returns the best solution so far.
 ///
 /// The descents themselves run silent on purpose. Every round after the first
@@ -151,7 +151,7 @@ pub fn guided_local_search_with(
             arc_cost += arcs;
         }
     }
-    let mut stopped = log(SearchEvent::GuidedBest {
+    let mut stopped = log(SearchEvent::Best {
         iter: 0,
         cost: best_cost,
     })
@@ -182,9 +182,9 @@ pub fn guided_local_search_with(
         if cost < best_cost {
             best_cost = cost;
             best.clone_from(sol);
-            stopped = log(SearchEvent::GuidedBest { iter, cost }).is_break();
+            stopped = log(SearchEvent::Best { iter, cost }).is_break();
         }
-        stopped = stopped || log(SearchEvent::GuidedRound { iter, cost }).is_break();
+        stopped = stopped || log(SearchEvent::Round { iter, cost }).is_break();
     }
 
     // `penalties` dies here; no caller can ever see a penalized cost.

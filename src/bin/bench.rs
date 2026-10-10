@@ -6,12 +6,17 @@
 //!   cargo run --release --bin bench -- --log         # search log to stderr
 //!   cargo run --release --bin bench -- X-n101        # name filter
 //!   cargo run --release --bin bench -- --gls=30      # guided local search
+//!   cargo run --release --bin bench -- --sisr=20000  # ruin and recreate
 //!   cargo run --release --bin bench -- --restarts=4 --gls=300  # multi-start
 //!
 //! `--restarts=N` keeps the cheapest of N randomized solves, `--rcl=K` widens
 //! each draw. Restarts help the hill climb but not GLS: a restart wipes the
 //! penalties that aim the next descent, so rounds beat seeds at equal budget.
 //! One start stays the plain greedy, so baseline.csv keeps its meaning.
+//!
+//! `--sisr` takes its knobs as `--sisr-removed=N`, `--sisr-string=N`,
+//! `--sisr-t0=F` and `--sisr-t1=F`; unset ones keep `SisrParams::new`'s.
+//! `--seed=N` shifts every seed, to tell a better knob from a lucky draw.
 //!
 //!   cargo run --release --bin bench -- --scenario=forbid  # constraint vs. open delta
 //!   cargo run --release --bin bench -- --scenario=precede # ordering within a route
@@ -34,8 +39,8 @@ use volare::cvrplib::{Instance, cvrp_model, cvrp_model_with, parse_sol};
 use volare::eval::{eval_route, eval_routes, violations, visits_all_nodes};
 use volare::model::{Model, ModelBuilder};
 use volare::solver::{
-    Improve, SearchEvent, Solution, first_solution_with, guided_local_search_with,
-    local_search_with, search_log, solve_with,
+    Improve, SearchEvent, SisrParams, Solution, first_solution_with, guided_local_search_with,
+    local_search_with, ruin_recreate_with, search_log, solve_with,
 };
 use volare::types::{NodeId, VehicleId};
 
@@ -54,6 +59,37 @@ fn main() {
     let gls: Option<usize> = args
         .iter()
         .find_map(|a| a.strip_prefix("--gls=")?.parse().ok());
+    let sisr: Option<usize> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--sisr=")?.parse().ok());
+    assert!(
+        gls.is_none() || sisr.is_none(),
+        "pick one of --gls and --sisr"
+    );
+    let flag = |name: &str| args.iter().find_map(|a| a.strip_prefix(name));
+    let improve = match (gls, sisr) {
+        (Some(iters), _) => Improve::Gls { iters },
+        (_, Some(iters)) => {
+            let mut p = SisrParams::new(iters);
+            if let Some(v) = flag("--sisr-removed=") {
+                p.avg_removed = v.parse().expect("--sisr-removed");
+            }
+            if let Some(v) = flag("--sisr-string=") {
+                p.max_string = v.parse().expect("--sisr-string");
+            }
+            if let Some(v) = flag("--sisr-t0=") {
+                p.start_temperature = v.parse().expect("--sisr-t0");
+            }
+            if let Some(v) = flag("--sisr-t1=") {
+                p.end_temperature = v.parse().expect("--sisr-t1");
+            }
+            if let Some(v) = flag("--seed=") {
+                p.seed = v.parse().expect("--seed");
+            }
+            Improve::Sisr(p)
+        }
+        _ => Improve::HillClimb,
+    };
     let scenario = args.iter().find_map(|a| a.strip_prefix("--scenario="));
     // N randomized solves, cheapest wins. `--rcl=K` is the draw width.
     let restarts: usize = args
@@ -77,8 +113,8 @@ fn main() {
         "baseline.csv guards the unconstrained hill climb — a scenario run would erase it"
     );
     assert!(
-        !(write_baseline && gls.is_some()),
-        "baseline.csv guards the hill climb — writing it from a GLS run would erase that"
+        !(write_baseline && !matches!(improve, Improve::HillClimb)),
+        "baseline.csv guards the hill climb — writing it from another search would erase that"
     );
     assert!(restarts >= 1, "--restarts must be at least 1");
     assert!(
@@ -95,11 +131,11 @@ fn main() {
             &instances,
             write_baseline,
             log_search,
-            gls,
+            improve,
             restarts,
             rcl,
         ),
-        Some(name) => bench_scenario(name, &instances, log_search, gls),
+        Some(name) => bench_scenario(name, &instances, log_search, improve),
     }
 }
 
@@ -108,7 +144,7 @@ fn bench_reference(
     instances: &[PathBuf],
     write_baseline: bool,
     log_search: bool,
-    gls: Option<usize>,
+    improve: Improve,
     restarts: usize,
     rcl: usize,
 ) {
@@ -150,9 +186,15 @@ fn bench_reference(
                     let _ = log(e);
                 });
                 let ctor = eval_routes(&model, &sol).expect("infeasible construction");
-                match gls {
-                    Some(iters) => guided_local_search_with(&model, &mut sol, iters, &mut log),
-                    None => local_search_with(&model, &mut sol, &mut log),
+                match improve {
+                    Improve::HillClimb => local_search_with(&model, &mut sol, &mut log),
+                    Improve::Gls { iters } => {
+                        guided_local_search_with(&model, &mut sol, iters, &mut log)
+                    }
+                    Improve::Sisr(mut p) => {
+                        p.seed += start as u64;
+                        ruin_recreate_with(&model, &mut sol, p, &mut log)
+                    }
                 }
                 let cost =
                     eval_routes(&model, &sol).expect("solver returned an infeasible solution");
@@ -212,7 +254,7 @@ fn bench_reference(
     }
 }
 
-fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: Option<usize>) {
+fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, improve: Improve) {
     println!(
         "{:<14} {:>5} {:>5} {:>9} {:>9} {:>7} {:>7}",
         "instance", "n", "note", "open", "scenario", "delta%", "ms"
@@ -224,7 +266,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
         let mut log = logger(log_search);
 
         let started = Instant::now();
-        let open = solve(&cvrp_model(&inst, fleet), gls, &mut log).cost;
+        let open = solve(&cvrp_model(&inst, fleet), improve, &mut log).cost;
         let mut note = String::new();
         let model = cvrp_model_with(&inst, fleet, |b| match scenario {
             "forbid" => forbid_model(&inst, b, &mut note),
@@ -235,7 +277,7 @@ fn bench_scenario(scenario: &str, instances: &[PathBuf], log_search: bool, gls: 
             "softcap" => softcap_model(&inst, b, &mut note),
             _ => unreachable!("gated in main"),
         });
-        let sol = solve(&model, gls, &mut log);
+        let sol = solve(&model, improve, &mut log);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
 
         // The whole point of the run: the constraint held.
@@ -471,13 +513,9 @@ fn free_fleet(inst: &Instance) -> usize {
 
 fn solve(
     m: &Model,
-    gls: Option<usize>,
+    improve: Improve,
     log: &mut dyn FnMut(SearchEvent) -> ControlFlow<()>,
 ) -> Solution {
-    let improve = match gls {
-        Some(iters) => Improve::Gls { iters },
-        None => Improve::HillClimb,
-    };
     solve_with(m, Construct::CheapestInsertion, improve, log)
 }
 

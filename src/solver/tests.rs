@@ -296,19 +296,20 @@ fn search_events_trace_the_solve() {
 }
 
 /// `Break` ends the search on the spot, and the answer is still the best one
-/// seen, not whatever the stopped round held.
+/// seen, not whatever the stopped round held. One monitor, every search that
+/// runs in rounds.
 #[test]
-fn monitor_stops_guided_search() {
+fn monitor_stops_any_round_search() {
     let m = line_model();
-    let (mut rounds, mut best, mut done) = (0, i64::MAX, None);
-    let sol = solve_with(
-        &m,
-        Construct::CheapestInsertion,
+    for improve in [
         Improve::Gls { iters: 1000 },
-        |e| {
+        Improve::Sisr(SisrParams::new(1000)),
+    ] {
+        let (mut rounds, mut best, mut done) = (0, i64::MAX, None);
+        let sol = solve_with(&m, Construct::CheapestInsertion, improve, |e| {
             match e {
-                SearchEvent::GuidedBest { cost, .. } => best = cost,
-                SearchEvent::GuidedRound { .. } => rounds += 1,
+                SearchEvent::Best { cost, .. } => best = cost,
+                SearchEvent::Round { .. } => rounds += 1,
                 SearchEvent::Done { cost } => done = Some(cost),
                 _ => {}
             }
@@ -317,11 +318,11 @@ fn monitor_stops_guided_search() {
             } else {
                 ControlFlow::Continue(())
             }
-        },
-    );
-    assert_eq!(rounds, 5);
-    assert_eq!(done, Some(best));
-    assert_eq!(sol.cost, best);
+        });
+        assert_eq!(rounds, 5, "{improve:?}");
+        assert_eq!(done, Some(best), "{improve:?}");
+        assert_eq!(sol.cost, best, "{improve:?}");
+    }
 }
 
 #[test]
@@ -373,4 +374,142 @@ fn monitor_stops_hill_climb() {
     let (first, cost) = improvements(true);
     assert_eq!(first, all[..1]);
     assert_eq!(cost, Some(first[0]));
+}
+
+/// Ruin and recreate keeps every constraint the evaluator enforces, never
+/// returns worse than its start, and a seed reproduces its answer.
+#[test]
+fn ruin_recreate_is_seeded_feasible_and_monotone() {
+    let dist = |a: NodeId, b: NodeId| (a.0 as i64 - b.0 as i64).abs() * 10;
+    let mut b = ModelBuilder::new(9);
+    let cost = b.cost_class(dist);
+    let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.vehicle(NodeId(0), NodeId(0), cost);
+    b.forbid(v0, NodeId(1));
+    b.dimension(
+        "load",
+        |_from, to| if to == NodeId(0) { 0 } else { 1 },
+        vec![3, 3, 3],
+    );
+    b.allow_drop(NodeId(8), 15);
+    let m = b.build();
+
+    let start = cheapest_insertion(&m, |_| {});
+    let start_cost = eval_routes(&m, &start).unwrap();
+    let run = |seed| {
+        let mut sol = start.clone();
+        let mut p = SisrParams::new(500);
+        p.seed = seed;
+        ruin_recreate(&m, &mut sol, p);
+        sol
+    };
+
+    for seed in 0..8 {
+        let sol = run(seed);
+        assert_eq!(sol, run(seed), "seed {seed} did not reproduce");
+        assert!(visits_all_nodes(&m, &sol), "seed {seed} lost a node");
+        let c = eval_routes(&m, &sol).expect("infeasible result");
+        assert!(c <= start_cost, "seed {seed} returned worse than its start");
+        assert!(
+            !sol[v0.index()].contains(&NodeId(1)),
+            "seed {seed} put node 1 on the vehicle that forbids it"
+        );
+    }
+}
+
+/// Every constraint `walk` knows, on small nodes with random windows. Vehicle
+/// 0 carries no price, so its routes take the slack shortcut; vehicle 1 pays
+/// for waiting and for a soft peak, so its routes walk.
+fn every_constraint_model(seed: u64) -> Model {
+    let mut rng = Rng(seed);
+    let n = 9;
+    let x: Vec<i64> = (0..n).map(|_| rng.below(40) as i64).collect();
+    let dist = move |a: NodeId, b: NodeId| (x[a.index()] - x[b.index()]).abs();
+    let demand: Vec<i64> = (0..n)
+        .map(|i| if i == 0 { 0 } else { 1 + (i % 3) as i64 })
+        .collect();
+
+    let mut b = ModelBuilder::new(n);
+    let cost = b.cost_class(dist.clone());
+    let v0 = b.vehicle(NodeId(0), NodeId(0), cost);
+    let v1 = b.vehicle(NodeId(0), NodeId(0), cost);
+    b.dimension("load", move |_, to| demand[to.index()], vec![9, 8]);
+    b.soft_max_cumul("load", v1, 5, 3);
+    b.dimension(
+        "time",
+        move |from, to| dist(from, to) + if from == NodeId(0) { 0 } else { 5 },
+        vec![400, 400],
+    );
+    // Picks up at even nodes, delivers at odd ones: the cumul dips mid-route.
+    b.dimension("pd", |_, to| if to.0 % 2 == 0 { 2 } else { -1 }, vec![5, 6]);
+
+    for i in 1..n {
+        let node = NodeId(i as u32);
+        if rng.below(2) == 0 {
+            let lb = rng.below(120) as i64;
+            b.cumul_bounds("time", node, lb, lb + 40 + rng.below(120) as i64);
+        }
+        if rng.below(4) == 0 {
+            b.soft_upper_bound("time", node, rng.below(100) as i64, 2);
+        }
+        if rng.below(5) == 0 {
+            b.max_wait_at("time", node, rng.below(30) as i64);
+        }
+    }
+    b.max_wait("time", v0, 60);
+    b.wait_cost("time", v1, 1);
+    b.forbid(v0, NodeId(1));
+    b.precede(NodeId(2), NodeId(3));
+    b.allow_drop(NodeId(8), 50);
+    b.allow_drop(NodeId(7), 20);
+    b.build()
+}
+
+/// `insert_cost` is a shortcut for `eval_route` on the inserted route, so it
+/// must agree with it everywhere, feasible or not.
+#[test]
+fn route_cache_prices_insertions_like_eval_route() {
+    use crate::eval::RouteCache;
+
+    let (mut checked, mut feasible) = (0, 0);
+    for seed in 0..40 {
+        let m = every_constraint_model(seed);
+        let mut rng = Rng(seed ^ 0xABCD);
+        let customers: Vec<NodeId> = (1..m.node_count() as u32).map(NodeId).collect();
+        let mut cache = RouteCache::default();
+
+        for _ in 0..200 {
+            let v = VehicleId(rng.below(m.vehicle_count()) as u32);
+            let mut pool = customers.clone();
+            for i in (1..pool.len()).rev() {
+                pool.swap(i, rng.below(i + 1));
+            }
+            let (route, rest) = pool.split_at(rng.below(6));
+
+            let truth = eval_route(&m, route, v);
+            assert_eq!(cache.rebuild(&m, route, v), truth.is_some());
+            let Some(c) = truth else { continue };
+            assert_eq!(cache.cost(), c);
+
+            for &u in rest {
+                for pos in 0..=route.len() {
+                    let mut inserted = route.to_vec();
+                    inserted.insert(pos, u);
+                    let want = eval_route(&m, &inserted, v);
+                    assert_eq!(
+                        cache.insert_cost(&m, route, v, pos, u),
+                        want,
+                        "seed {seed}: {u:?} at {pos} of {route:?} on {v:?}"
+                    );
+                    checked += 1;
+                    feasible += want.is_some() as usize;
+                }
+            }
+        }
+    }
+    assert!(
+        feasible > 1000 && checked - feasible > 1000,
+        "{feasible} of {checked} feasible"
+    );
 }

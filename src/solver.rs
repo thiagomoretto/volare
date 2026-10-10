@@ -9,12 +9,14 @@ mod construct;
 mod descent;
 mod gls;
 mod operators;
+mod sisr;
 #[cfg(test)]
 mod tests;
 
 pub use construct::{cheapest_insertion, first_solution_with, greedy_randomized};
 pub use descent::{local_search, local_search_with};
 pub use gls::{guided_local_search, guided_local_search_with};
+pub use sisr::{SisrParams, ruin_recreate, ruin_recreate_with};
 
 /// The neighborhood operator that accepted an improving move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,33 +45,39 @@ impl std::fmt::Display for Operator {
 /// observe them; `search_log` builds one that prints progress lines. Costs are
 /// whole-solution totals.
 ///
-/// The callback handed to `solve_with`, `local_search_with` or
-/// `guided_local_search_with` is also a search monitor: return
+/// The callback handed to `solve_with`, `local_search_with`,
+/// `guided_local_search_with` or `ruin_recreate_with` is also a search
+/// monitor: return
 /// `ControlFlow::Break(())` and the search stops at once, keeps the best
 /// solution found, and reports `Done`. Construction cannot stop before every
 /// node is placed, so `first_solution_with` takes a plain observer; a `Break`
 /// on `FirstSolution` makes `solve_with` skip the improvement phase.
+///
+/// Every search that runs in rounds reports the same `Best` and `Round`, so
+/// one monitor serves all of them. Match with a `_` arm: new variants can
+/// arrive without breaking your code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SearchEvent {
     /// Construction placed every node; the first complete solution exists.
     FirstSolution { cost: Cost },
     /// `operator` accepted a move and the total cost dropped to `cost`.
     Improvement { operator: Operator, cost: Cost },
-    /// Guided local search finished round `iter` holding a solution cheaper
-    /// than anything before it. `cost` is the true cost, never the penalized
-    /// one the descent was reading.
-    GuidedBest { iter: usize, cost: Cost },
-    /// Guided local search finished round `iter`; `cost` is the true cost of
-    /// the round's own solution. Fires every round, improving or not, so a
-    /// monitor can stop a search that has stalled.
-    GuidedRound { iter: usize, cost: Cost },
+    /// Round `iter` found a solution cheaper than anything before it; round
+    /// 0 is the starting solution. `cost` is the true cost, never a penalized
+    /// one a search may steer by.
+    Best { iter: usize, cost: Cost },
+    /// Round `iter` finished; `cost` is the true cost of the solution the
+    /// search now holds, which may be worse than the best. Fires every round,
+    /// improving or not, so a monitor can stop a search that has stalled.
+    Round { iter: usize, cost: Cost },
     /// The search converged or the callback stopped it; the solution is final.
     Done { cost: Cost },
 }
 
 /// An event callback that prints progress lines to stderr, prefixed with
-/// elapsed time since the closure was created. It skips `GuidedRound`, which
-/// fires too often to read, and never stops the search:
+/// elapsed time since the closure was created. It skips `Round`, which fires
+/// too often to read, and never stops the search:
 ///
 /// ```text
 /// #search    0.012s  relocate improved, cost 5900
@@ -96,10 +104,10 @@ pub fn search_log() -> impl FnMut(SearchEvent) -> ControlFlow<()> {
             SearchEvent::Improvement { operator, cost } => {
                 eprintln!("#search {t:7.3}s  {operator} improved, cost {cost}")
             }
-            SearchEvent::GuidedBest { iter, cost } => {
-                eprintln!("#search {t:7.3}s  gls round {iter}, new best cost {cost}")
+            SearchEvent::Best { iter, cost } => {
+                eprintln!("#search {t:7.3}s  round {iter}, new best cost {cost}")
             }
-            SearchEvent::GuidedRound { .. } => {}
+            SearchEvent::Round { .. } => {}
             SearchEvent::Done { cost } => eprintln!("#search {t:7.3}s  done, cost {cost}"),
         }
         ControlFlow::Continue(())
@@ -118,12 +126,16 @@ pub enum Construct {
 }
 
 /// How that solution is then made cheaper.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Improve {
     /// Descend to the first local optimum and stop.
     HillClimb,
     /// Guided local search: keep descending, penalizing the arcs that keep
     /// coming back, for `iters` rounds.
     Gls { iters: usize },
+    /// Ruin and recreate: cut strings of nearby customers out, reinsert them,
+    /// accept under simulated annealing. See `SisrParams`.
+    Sisr(SisrParams),
 }
 
 /// `cost` is the true cost — never the penalized number a GLS descent was
@@ -165,6 +177,7 @@ pub fn solve_with(
         match improve {
             Improve::HillClimb => local_search_with(m, &mut sol, &mut log),
             Improve::Gls { iters } => guided_local_search_with(m, &mut sol, iters, &mut log),
+            Improve::Sisr(p) => ruin_recreate_with(m, &mut sol, p, &mut log),
         }
     }
     let cost = eval_routes(m, &sol).expect("solver produced an infeasible solution");
@@ -217,4 +230,30 @@ fn with_front(route: &[NodeId], node: NodeId, out: &mut Vec<NodeId>) {
     out.clear();
     out.push(node);
     out.extend_from_slice(route);
+}
+
+/// SplitMix64. Not cryptographic. Seeds reproduce solutions, no dependency.
+struct Rng(u64);
+
+impl Rng {
+    #[inline]
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform over `0..n`. Modulo bias under 2^-55 at these `n`, ignore it.
+    #[inline]
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    /// A draw from the unit exponential, `-ln U` for `U` in `(0, 1]`.
+    fn exp1(&mut self) -> f64 {
+        let u = ((self.next() >> 11) + 1) as f64 / (1u64 << 53) as f64;
+        -u.ln()
+    }
 }

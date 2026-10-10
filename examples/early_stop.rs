@@ -32,7 +32,7 @@ fn main() {
     let mut mark: Option<(Instant, Cost)> = None;
     let monitor = |event| {
         let _ = log(event);
-        if let SearchEvent::GuidedBest { cost, .. } = event {
+        if let SearchEvent::Best { cost, .. } = event {
             match mark {
                 Some((_, at)) if cost * 100 > at * (100 - MIN_GAIN_PCT) => {}
                 _ => mark = Some((Instant::now(), cost)),

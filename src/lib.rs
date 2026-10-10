@@ -10,6 +10,6 @@ pub use eval::{
 };
 pub use model::{Model, ModelBuilder};
 pub use solver::{
-    Construct, Improve, Operator, SearchEvent, Solution, search_log, solve, solve_with,
+    Construct, Improve, Operator, SearchEvent, SisrParams, Solution, search_log, solve, solve_with,
 };
 pub use types::{Cost, NodeId, VehicleId};
